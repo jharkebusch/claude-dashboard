@@ -51,6 +51,16 @@ the Docker daemon; by default it stays on-demand.
 | Plan percentages and reset times | `GET /api/oauth/usage` on your Claude account — the same endpoint `/usage` uses |
 | API-equivalent cost | `pricing.json` × the token split, computed locally |
 
+**Current sessions** lists every Claude Code window you have open — several
+commonly run at once, one per project — with a live dot for anything that wrote
+in the last 5 minutes and an idle marker up to 15. Sessions Claude Code starts
+programmatically are excluded from that list and counted alongside it instead:
+plugin hooks such as the security reviewer open a fresh session per run, and a
+handful of those would otherwise crowd out the windows you actually opened. They
+are still real spend, so they stay in every total and appear in the sessions
+table marked `auto`. The signal is the `entrypoint` each transcript records —
+`cli` for a session you type in, `sdk-py` for one a plugin started.
+
 Two details worth knowing:
 
 - **Transcripts are pruned after about a month.** That is why all-time figures lean

@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS titles (
     title      TEXT NOT NULL
 );
 
+-- How a session was started. User records carry `entrypoint`: "cli" for a
+-- session someone is typing in, "sdk-py" and friends for one spawned
+-- programmatically — plugin hooks like the security reviewer open a fresh
+-- session per run, and those should not be presented as windows you have open.
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    entrypoint TEXT
+);
+
 -- Lifetime per-model totals from stats-cache.json. Claude Code prunes
 -- transcripts after about a month, so this is the only source for the months
 -- before the oldest surviving one. It is cumulative through meta.last_computed;
@@ -145,7 +154,8 @@ def ingest(db, claude_dir):
         return 0
 
     seen = {r["path"]: r for r in db.execute("SELECT * FROM files")}
-    rows, titles, file_state = [], {}, []
+    known_sessions = {r["session_id"] for r in db.execute("SELECT session_id FROM sessions")}
+    rows, titles, file_state, origins = [], {}, [], {}
 
     for path in root.rglob("*.jsonl"):
         key = str(path)
@@ -166,7 +176,19 @@ def ingest(db, claude_dir):
         except OSError:
             continue
 
+        # The file is named after its session, so the entrypoint only has to be
+        # looked for until it is known — no parsing of user records after that.
+        want_origin = path.stem not in known_sessions and path.stem not in origins
+
         for line in lines:
+            if want_origin and '"entrypoint"' in line:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    rec = {}
+                if rec.get("sessionId") and rec.get("entrypoint"):
+                    origins[rec["sessionId"]] = rec["entrypoint"]
+                    want_origin = False
             if '"assistant"' not in line and '"ai-title"' not in line:
                 continue
             try:
@@ -193,6 +215,8 @@ def ingest(db, claude_dir):
             "INSERT INTO titles VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET title=excluded.title",
             list(titles.items()),
         )
+    if origins:
+        db.executemany("INSERT OR IGNORE INTO sessions VALUES (?,?)", list(origins.items()))
     if file_state:
         db.executemany(
             "INSERT INTO files VALUES (?,?,?,?) ON CONFLICT(path) DO UPDATE SET"

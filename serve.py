@@ -38,7 +38,8 @@ WEEK_WINDOW = timedelta(days=7)
 LIMITS_MIN_INTERVAL = 120       # floor for the account endpoint, in seconds
 LIMITS_MAX_INTERVAL = 900       # ceiling the backoff climbs to after failures
 MANUAL_COOLDOWN = 15            # shortest gap between manual refreshes
-ACTIVE_WINDOW = 300             # a session counts as running if it wrote this recently
+LIVE_WINDOW = 300               # wrote this recently -> shown as running
+OPEN_WINDOW = 900               # wrote this recently -> still listed, marked idle
 HOME_PREFIX = re.compile(r"^(/home/[^/]+|/Users/[^/]+|/root)(?=/|$)")
 CREDENTIALS = str(Path(CONFIG["claude_dir"]) / ".credentials.json")
 
@@ -435,6 +436,7 @@ def build_snapshot(range_key, project):
         "projects": projects,
         "sessions": recent_sessions(scope, params),
         "live_sessions": live_sessions(),
+        "automated_recent": automated_recent(),
         "cost_enabled": bool(CONFIG.get("show_cost", True)),
         "other_color": OTHER_COLOR,
     }
@@ -468,6 +470,7 @@ def _session_rows(sql, params):
             # Carry the working directory too, shortened for display.
             "path": short_path(r["cwd"] or ""),
             "branch": r["branch"] or "",
+            "automated": (r["entrypoint"] or "cli") != "cli",
             "models": sorted({model_label(m) for m in (r["models"] or "").split(",") if m}),
             "turns": r["requests"] or 0,
             "tokens": r["tokens"] or 0,
@@ -483,9 +486,18 @@ SESSION_SELECT = (
     "SELECT r.session_id AS session_id, MIN(ts_epoch) AS start, MAX(ts_epoch) AS end,"
     " MAX(project) AS project, MAX(cwd) AS cwd, MAX(branch) AS branch,"
     " GROUP_CONCAT(DISTINCT model) AS models, t.title AS title,"
+    " MAX(s.entrypoint) AS entrypoint,"
     f" {TOKEN_SUM}"
-    " FROM requests r LEFT JOIN titles t ON t.session_id = r.session_id"
+    " FROM requests r"
+    " LEFT JOIN titles t ON t.session_id = r.session_id"
+    " LEFT JOIN sessions s ON s.session_id = r.session_id"
 )
+
+# Sessions Claude Code opened programmatically — plugin hooks such as the
+# security reviewer start one per run. Real usage, but not a window you opened,
+# so they are counted rather than listed as "running". Unknown means old rows
+# ingested before entrypoints were recorded; treat those as interactive.
+INTERACTIVE_ONLY = "(s.entrypoint IS NULL OR s.entrypoint = 'cli')"
 
 
 def recent_sessions(scope, params):
@@ -495,22 +507,25 @@ def recent_sessions(scope, params):
 
 
 def live_sessions(limit=8):
-    """Every session that has written recently, not just the newest one.
+    """The Claude Code windows you have open, most recently active first.
 
-    Several Claude Code windows commonly run at once — one per project — and each
-    appends to its own transcript, so picking the single most recent request made
-    the panel flip between them. When nothing is running, the most recent session
-    stands in so the panel is never empty.
+    Several commonly run at once — one per project — and each appends to its own
+    transcript, so picking the single most recent request made the panel flip
+    between them. Sessions opened programmatically are excluded here and counted
+    separately. When nothing is running, the most recent session stands in so the
+    panel is never empty.
     """
-    cutoff = time.time() - ACTIVE_WINDOW
+    cutoff = time.time() - OPEN_WINDOW
     rows = _session_rows(
-        f"{SESSION_SELECT} GROUP BY r.session_id HAVING MAX(ts_epoch) >= ?"
-        " ORDER BY end DESC LIMIT ?",
+        f"{SESSION_SELECT} WHERE {INTERACTIVE_ONLY} GROUP BY r.session_id"
+        " HAVING MAX(ts_epoch) >= ? ORDER BY end DESC LIMIT ?",
         (cutoff, limit),
     )
     if not rows:
         rows = _session_rows(
-            f"{SESSION_SELECT} GROUP BY r.session_id ORDER BY end DESC LIMIT 1", ()
+            f"{SESSION_SELECT} WHERE {INTERACTIVE_ONLY} GROUP BY r.session_id"
+            " ORDER BY end DESC LIMIT 1",
+            (),
         )
     ids = [r["id"] for r in rows if r["id"]]
     if not ids:
@@ -537,8 +552,20 @@ def live_sessions(limit=8):
                     "cache_write": (d["w5m"] or 0) + (d["w1h"] or 0),
                 }
             )
-        row["active"] = (now - datetime.fromisoformat(row["end"]).timestamp()) < ACTIVE_WINDOW
+        row["active"] = (now - datetime.fromisoformat(row["end"]).timestamp()) < LIVE_WINDOW
     return rows
+
+
+def automated_recent():
+    """Plugin-spawned sessions in the same window — counted, not listed."""
+    row = query(
+        "SELECT COUNT(DISTINCT r.session_id) AS sessions,"
+        " SUM(input + output + cache_read + cache_w5m + cache_w1h) AS tokens"
+        " FROM requests r JOIN sessions s ON s.session_id = r.session_id"
+        " WHERE s.entrypoint IS NOT NULL AND s.entrypoint != 'cli' AND r.ts_epoch >= ?",
+        (time.time() - OPEN_WINDOW,),
+    )[0]
+    return {"sessions": row["sessions"] or 0, "tokens": row["tokens"] or 0}
 
 
 # --- background refresh ----------------------------------------------------

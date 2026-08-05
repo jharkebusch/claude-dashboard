@@ -126,6 +126,7 @@ select:hover { color: var(--ink); }
     background: rgba(255, 255, 255, 0.06); border-radius: 20px; padding: 2px 9px;
 }
 .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.chip.auto { font-size: 10px; padding: 1px 7px; margin-left: 8px; color: var(--muted); }
 
 /* --- charts ------------------------------------------------------------- */
 
@@ -698,16 +699,23 @@ function renderLiveSessions(snap) {
 
     // Several Claude Code windows can run at once — show each of them.
     const running = list.filter(s => s.active);
-    heading.textContent = running.length > 1 ? "Current sessions" : "Current session";
+    heading.textContent = list.length > 1 ? "Current sessions" : "Current session";
+    let summary;
     if (running.length) {
         const tokens = running.reduce((sum, s) => sum + s.tokens, 0);
-        age.textContent = running.length > 1
+        summary = running.length > 1
             ? `${running.length} running · ${fmtTokens(tokens)} tokens between them`
             : "live now";
     } else {
         const idle = (Date.now() - new Date(list[0].end).getTime()) / 1000;
-        age.textContent = `nothing running · last activity ${fmtDuration(idle)} ago`;
+        summary = `nothing running · last activity ${fmtDuration(idle)} ago`;
     }
+    // Plugin-spawned sessions are real spend but not windows you opened.
+    const auto = snap.automated_recent || {};
+    if (auto.sessions) {
+        summary += ` · plus ${auto.sessions} automated (${fmtTokens(auto.tokens)})`;
+    }
+    age.textContent = summary;
 
     for (const s of list) host.appendChild(sessionCard(s, snap.cost_enabled));
 }
@@ -829,7 +837,9 @@ function renderSessions(snap) {
     const body = el("tbody");
     for (const s of snap.sessions) {
         const row = el("tr");
-        row.appendChild(el("td", { class: "name", text: s.title || "Untitled" }));
+        const name = el("td", { class: "name" }, [el("span", { text: s.title || "Untitled" })]);
+        if (s.automated) name.appendChild(el("span", { class: "chip auto", text: "auto" }));
+        row.appendChild(name);
         const where = el("td", { class: "muted", text: s.project + (s.branch ? " · " + s.branch : "") });
         if (s.path) where.title = s.path;
         row.appendChild(where);
