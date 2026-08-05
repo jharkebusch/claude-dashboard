@@ -35,7 +35,7 @@ OTHER_COLOR = "#8a8a86"
 SESSION_WINDOW = timedelta(hours=5)
 WEEK_WINDOW = timedelta(days=7)
 LIMITS_MIN_INTERVAL = 120       # floor for the account endpoint, in seconds
-LIMITS_MAX_INTERVAL = 3600      # ceiling the backoff climbs to after failures
+LIMITS_MAX_INTERVAL = 900       # ceiling the backoff climbs to after failures
 MANUAL_COOLDOWN = 15            # shortest gap between manual refreshes
 CREDENTIALS = str(Path(CONFIG["claude_dir"]) / ".credentials.json")
 
@@ -70,6 +70,12 @@ def _restore_limits():
         return
     if isinstance(payload, dict) and payload.get("ok"):
         _state["limits"] = payload
+        # Restarts must not each cost a call. Carry the stored read's age into
+        # the schedule so a rebuild inside the polling interval waits its turn.
+        fetched_at = payload.get("fetched_at")
+        if fetched_at:
+            base = max(LIMITS_MIN_INTERVAL, int(CONFIG.get("limits_refresh_seconds", 300)))
+            _state["next_limits"] = fetched_at + base
 
 
 _restore_limits()
@@ -206,6 +212,7 @@ def build_snapshot(range_key, project):
     now = datetime.now(timezone.utc)
     with _state_lock:
         limits = dict(_state["limits"])
+        limits["next_attempt_in"] = max(0, round(_state["next_limits"] - time.time()))
         version = _state["version"]
 
     days = RANGES.get(range_key, 30)

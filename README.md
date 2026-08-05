@@ -76,14 +76,24 @@ written anywhere. Claude Code rotates that token itself — the file is re-read 
 time rather than held — and if it ever goes stale the page says so and keeps
 showing the locally measured token counts, which do not depend on it.
 
-That endpoint rate-limits, so it is polled slowly (see `limits_refresh_seconds`)
+That endpoint rate-limits on a quota window it does not disclose — a 429 comes
+back with `Retry-After: 0`, which is no guidance at all — and the quota is shared
+with anything else on the account that reads it, Claude Code's own `/usage`
+included. So it is polled slowly (see `limits_refresh_seconds`)
 and independently of the transcript watcher, which is local file I/O and stays on
 its few-second loop. A failed call doubles the interval up to an hour, honouring
 `Retry-After` when the endpoint sends one, and resets to the configured interval on
 the next success. Meanwhile the last good percentages stay on screen labelled with
 their age rather than disappearing, since reset times do not move between polls —
 and that last good read is stored in the database, so a restart during a
-rate-limited window still shows them instead of an empty panel.
+rate-limited window still shows them instead of an empty panel. The stored read
+also carries its own timestamp into the schedule, so restarting the server
+repeatedly — rebuilding the image, say — does not spend a call each time.
+
+If the percentages are unavailable anyway, the panel falls back to the same two
+windows measured from your transcripts, which never depended on the endpoint, and
+the note says when the next attempt is due. Backoff tops out at 15 minutes, so
+recovery is picked up on its own; **Refresh** forces the question immediately.
 
 ## Configuration (`config.json`)
 

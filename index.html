@@ -522,14 +522,22 @@ function renderHourly(hours) {
 function updateLimitsNote() {
     const note = document.getElementById("limits-note");
     if (Number(note.dataset.hold || 0) > Date.now()) return;   // a transient message is showing
+    const retryIn = Number(note.dataset.retryAt || 0) - Date.now() / 1000;
+    const retry = retryIn > 0 ? ` · retrying in ${fmtDuration(retryIn)}` : "";
     const at = Number(note.dataset.fetchedAt || 0);
-    if (!at) return;
+    if (!at) {
+        if (note.dataset.errorText) {
+            note.className = "note error";
+            note.textContent = note.dataset.errorText + retry;
+        }
+        return;
+    }
     const age = Math.max(0, Date.now() / 1000 - at);
     const plan = note.dataset.plan ? note.dataset.plan + " plan · " : "";
     const stale = note.dataset.stale || "";
     note.className = stale ? "note error" : "note";
     note.textContent = stale
-        ? `${plan}last read ${fmtDuration(age)} ago · ${stale}`
+        ? `${plan}last read ${fmtDuration(age)} ago · ${stale}${retry}`
         : `${plan}read ${age < 45 ? "just now" : fmtDuration(age) + " ago"}`;
 }
 
@@ -546,17 +554,36 @@ function renderLimits(snap) {
     host.textContent = "";
     const limits = snap.limits || {};
 
+    const retryAt = limits.next_attempt_in ? Date.now() / 1000 + limits.next_attempt_in : 0;
+
     if (!limits.ok) {
         note.dataset.fetchedAt = "";
-        note.className = "note error";
-        note.textContent = limits.error || "unavailable";
-        host.appendChild(el("div", { class: "card note", text:
-            "Live plan percentages come from your Claude account. They are unavailable right now — the token counts below are measured locally and unaffected." }));
+        note.dataset.errorText = limits.error || "unavailable";
+        note.dataset.retryAt = retryAt;
+        updateLimitsNote();
+        // No percentages to show, so fall back to the same windows measured
+        // locally — those never depended on the account endpoint.
+        for (const item of [
+            { label: "Session · rolling 5 hours", w: snap.windows.session },
+            { label: "Week · rolling 7 days", w: snap.windows.week }
+        ]) {
+            host.appendChild(el("div", { class: "card" }, [
+                el("div", { class: "limit-label" }, [
+                    el("span", { text: item.label }),
+                    el("span", { class: "limit-pct", text: fmtTokens(item.w.tokens) })
+                ]),
+                el("div", { class: "limit-foot", style: "margin-top:10px" }, [
+                    el("span", { text: "measured locally · plan % unavailable" })
+                ])
+            ]));
+        }
         return;
     }
     note.dataset.fetchedAt = limits.fetched_at || "";
     note.dataset.plan = limits.plan || "";
     note.dataset.stale = limits.stale_error || "";
+    note.dataset.errorText = "";
+    note.dataset.retryAt = limits.stale_error ? retryAt : 0;
     updateLimitsNote();
 
     const gauges = [];
