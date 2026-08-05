@@ -34,6 +34,8 @@ RANGES = {"24h": 1, "7d": 7, "30d": 30, "90d": 90, "all": None}
 OTHER_COLOR = "#8a8a86"
 SESSION_WINDOW = timedelta(hours=5)
 WEEK_WINDOW = timedelta(days=7)
+LIMITS_MIN_INTERVAL = 120       # floor for the account endpoint, in seconds
+LIMITS_MAX_INTERVAL = 3600      # ceiling the backoff climbs to after failures
 
 _db_lock = threading.Lock()
 _state_lock = threading.Lock()
@@ -41,6 +43,25 @@ _state = {"version": 0, "limits": {"ok": False, "error": "not fetched yet"}}
 
 DATA.mkdir(parents=True, exist_ok=True)
 DB = ingest.connect(str(DATA / "usage.db"))
+
+
+def _restore_limits():
+    """Bring back the last good limits payload after a restart.
+
+    The endpoint rate-limits, so a restart can easily land in a window where the
+    first call fails. Reset times do not move between polls, so showing the
+    stored numbers with their age beats showing nothing.
+    """
+    try:
+        row = DB.execute("SELECT value FROM meta WHERE key = 'limits'").fetchone()
+        payload = json.loads(row["value"]) if row else None
+    except (sqlite3.Error, ValueError, TypeError):
+        return
+    if isinstance(payload, dict) and payload.get("ok"):
+        _state["limits"] = payload
+
+
+_restore_limits()
 
 TOKEN_SUM = (
     "SUM(input) AS input, SUM(output) AS output, SUM(cache_read) AS cache_read,"
@@ -467,10 +488,17 @@ def current_session():
 
 
 def refresher():
+    """Watch the transcripts continuously; poll the account endpoint sparingly.
+
+    Transcript polling is local file I/O and costs nothing. The usage endpoint is
+    a remote call that rate-limits, so it runs on its own slow schedule and backs
+    off — doubling up to LIMITS_MAX_INTERVAL — whenever a call fails.
+    """
     credentials = str(Path(CONFIG["claude_dir"]) / ".credentials.json")
     poll = max(1, int(CONFIG.get("poll_seconds", 3)))
-    limit_every = max(30, int(CONFIG.get("limits_refresh_seconds", 60)))
-    last_limits = 0.0
+    base_interval = max(LIMITS_MIN_INTERVAL, int(CONFIG.get("limits_refresh_seconds", 300)))
+    interval = base_interval
+    next_limits = 0.0
 
     with _db_lock:
         ingest.import_lifetime(DB, CONFIG["claude_dir"])
@@ -485,13 +513,41 @@ def refresher():
         except sqlite3.Error as exc:
             print(f"ingest error: {exc}")
 
-        if time.time() - last_limits > limit_every:
+        if time.time() >= next_limits:
             result = limits_api.fetch(credentials)
-            last_limits = time.time()
+            persist = None
             with _state_lock:
-                if result != _state["limits"]:
-                    _state["limits"] = result
+                previous = _state["limits"]
+                if result.get("ok"):
+                    interval = base_interval
+                    current = persist = {**result, "fetched_at": time.time()}
+                else:
+                    interval = min(
+                        LIMITS_MAX_INTERVAL, result.get("retry_after") or interval * 2
+                    )
+                    # A failed poll keeps the last good numbers on screen, marked
+                    # stale, rather than blanking the gauges over a transient 429.
+                    current = (
+                        {**previous, "stale_error": result["error"]}
+                        if previous.get("ok")
+                        else result
+                    )
+                    print(f"limits: {result['error']} — next attempt in {interval}s")
+                if current != previous:
+                    _state["limits"] = current
                     changed = True
+            if persist:
+                try:
+                    with _db_lock:
+                        DB.execute(
+                            "INSERT INTO meta VALUES ('limits', ?)"
+                            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                            (json.dumps(persist),),
+                        )
+                        DB.commit()
+                except (sqlite3.Error, TypeError):
+                    pass
+            next_limits = time.time() + interval
 
         if changed:
             with _state_lock:

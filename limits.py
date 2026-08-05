@@ -57,6 +57,18 @@ def fetch(credentials_path):
                 "ok": False,
                 "error": "token rejected (401) — run any Claude Code session to refresh it",
             }
+        if exc.code == 429:
+            # Honour Retry-After when the endpoint sends one; the caller backs
+            # off on its own either way.
+            try:
+                retry_after = int(exc.headers.get("Retry-After") or 0)
+            except (TypeError, ValueError):
+                retry_after = 0
+            return {
+                "ok": False,
+                "error": "rate limited by the usage endpoint — polling less often",
+                "retry_after": retry_after or None,
+            }
         return {"ok": False, "error": f"HTTP {exc.code}"}
     except (urllib.error.URLError, ValueError, OSError) as exc:
         return {"ok": False, "error": f"request failed: {exc}"}

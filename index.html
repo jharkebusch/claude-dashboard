@@ -507,6 +507,19 @@ function renderHourly(hours) {
 
 /* --- sections ------------------------------------------------------------ */
 
+function updateLimitsNote() {
+    const note = document.getElementById("limits-note");
+    const at = Number(note.dataset.fetchedAt || 0);
+    if (!at) return;
+    const age = Math.max(0, Date.now() / 1000 - at);
+    const plan = note.dataset.plan ? note.dataset.plan + " plan · " : "";
+    const stale = note.dataset.stale || "";
+    note.className = stale ? "note error" : "note";
+    note.textContent = stale
+        ? `${plan}last read ${fmtDuration(age)} ago · ${stale}`
+        : `${plan}read ${age < 45 ? "just now" : fmtDuration(age) + " ago"}`;
+}
+
 function severity(pct) {
     if (pct >= 95) return "--critical";
     if (pct >= 80) return "--serious";
@@ -521,14 +534,17 @@ function renderLimits(snap) {
     const limits = snap.limits || {};
 
     if (!limits.ok) {
+        note.dataset.fetchedAt = "";
         note.className = "note error";
         note.textContent = limits.error || "unavailable";
         host.appendChild(el("div", { class: "card note", text:
             "Live plan percentages come from your Claude account. They are unavailable right now — the token counts below are measured locally and unaffected." }));
         return;
     }
-    note.className = "note";
-    note.textContent = (limits.plan ? limits.plan + " plan · " : "") + "live from your Claude account";
+    note.dataset.fetchedAt = limits.fetched_at || "";
+    note.dataset.plan = limits.plan || "";
+    note.dataset.stale = limits.stale_error || "";
+    updateLimitsNote();
 
     const gauges = [];
     if (limits.five_hour) gauges.push({ label: "Session (5 hours)", g: limits.five_hour, w: snap.windows.session });
@@ -799,6 +815,7 @@ function tickCountdowns() {
             ? `resets in ${fmtDuration(left)} · ${fmtClock(iso)}`
             : "resetting…";
     }
+    updateLimitsNote();
     const snap = state.snap;
     if (snap) {
         const age = (Date.now() - new Date(snap.generated_at).getTime()) / 1000;

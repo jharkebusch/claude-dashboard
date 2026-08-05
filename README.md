@@ -69,6 +69,15 @@ written anywhere. Claude Code rotates that token itself — the file is re-read 
 time rather than held — and if it ever goes stale the page says so and keeps
 showing the locally measured token counts, which do not depend on it.
 
+That endpoint rate-limits, so it is polled slowly (see `limits_refresh_seconds`)
+and independently of the transcript watcher, which is local file I/O and stays on
+its few-second loop. A failed call doubles the interval up to an hour, honouring
+`Retry-After` when the endpoint sends one, and resets to the configured interval on
+the next success. Meanwhile the last good percentages stay on screen labelled with
+their age rather than disappearing, since reset times do not move between polls —
+and that last good read is stored in the database, so a restart during a
+rate-limited window still shows them instead of an empty panel.
+
 ## Configuration (`config.json`)
 
 | Key | Meaning |
@@ -76,7 +85,7 @@ showing the locally measured token counts, which do not depend on it.
 | `host`, `port` | Bind address. `127.0.0.1` keeps it off the network. |
 | `claude_dir` | Where Claude Code keeps its state |
 | `poll_seconds` | How often transcripts are checked (a full pass over ~650 files is a few ms) |
-| `limits_refresh_seconds` | How often the account endpoint is called (minimum 30) |
+| `limits_refresh_seconds` | How often the account endpoint is called. Default 300, floored at 120 — it rate-limits, and the reset times it returns only move once every few hours. |
 | `show_cost` | Show or hide every cost figure |
 | `default_range` | Range selected on load |
 | `series_colors` | Fixed model → colour map for the stacked chart |

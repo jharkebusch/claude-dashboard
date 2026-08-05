@@ -3,7 +3,7 @@
   "port": 7581,
   "claude_dir": "/home/you/.claude",
   "poll_seconds": 3,
-  "limits_refresh_seconds": 60,
+  "limits_refresh_seconds": 300,
   "show_cost": true,
   "default_range": "30d",
 
