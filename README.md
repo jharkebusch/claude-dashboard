@@ -11,8 +11,15 @@ python3 serve.py       # http://127.0.0.1:7581
 ```
 
 The page updates itself: the server watches the transcript files and pushes an
-event the moment a new request lands, so a session in another terminal shows up
-within a few seconds.
+event when new requests land, so a session in another terminal shows up within
+seconds. Those pushes are coalesced (`notify_seconds`) and applied without
+dimming the page, because an active session appends constantly and a redraw per
+append looks like the page reloading itself. Only a deliberate action — changing
+the range or project, or pressing **Refresh** — dims while it loads.
+
+The **Refresh** button next to *Plan limits* asks the account endpoint again
+straight away, on top of the 5-minute schedule. It is debounced (15 s) and a
+failed press never stretches the automatic backoff; a successful one resets it.
 
 ## Docker
 
@@ -85,6 +92,7 @@ rate-limited window still shows them instead of an empty panel.
 | `host`, `port` | Bind address. `127.0.0.1` keeps it off the network. |
 | `claude_dir` | Where Claude Code keeps its state |
 | `poll_seconds` | How often transcripts are checked (a full pass over ~650 files is a few ms) |
+| `notify_seconds` | Shortest gap between pushes to the page. An active session appends every few seconds; redrawing on each one reads as the page reloading itself, so updates are coalesced. |
 | `limits_refresh_seconds` | How often the account endpoint is called. Default 300, floored at 120 — it rate-limits, and the reset times it returns only move once every few hours. |
 | `show_cost` | Show or hide every cost figure |
 | `default_range` | Range selected on load |

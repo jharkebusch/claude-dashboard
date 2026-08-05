@@ -36,10 +36,21 @@ SESSION_WINDOW = timedelta(hours=5)
 WEEK_WINDOW = timedelta(days=7)
 LIMITS_MIN_INTERVAL = 120       # floor for the account endpoint, in seconds
 LIMITS_MAX_INTERVAL = 3600      # ceiling the backoff climbs to after failures
+MANUAL_COOLDOWN = 15            # shortest gap between manual refreshes
+CREDENTIALS = str(Path(CONFIG["claude_dir"]) / ".credentials.json")
 
 _db_lock = threading.Lock()
 _state_lock = threading.Lock()
-_state = {"version": 0, "limits": {"ok": False, "error": "not fetched yet"}}
+_limits_lock = threading.Lock()
+_state = {
+    "version": 0,          # bumps whenever the data behind a snapshot changes
+    "published": 0,        # the version clients are told about, coalesced
+    "published_at": 0.0,
+    "limits": {"ok": False, "error": "not fetched yet"},
+    "next_limits": 0.0,    # when the account endpoint may be called again
+    "limits_interval": 0.0,
+    "last_limits_attempt": 0.0,
+}
 
 DATA.mkdir(parents=True, exist_ok=True)
 DB = ingest.connect(str(DATA / "usage.db"))
@@ -487,71 +498,110 @@ def current_session():
 # --- background refresh ----------------------------------------------------
 
 
+def base_limits_interval():
+    return max(LIMITS_MIN_INTERVAL, int(CONFIG.get("limits_refresh_seconds", 300)))
+
+
+def refresh_limits(manual=False):
+    """Call the account endpoint, fold the result into state, reschedule.
+
+    Shared by the background loop and the manual refresh button, so both take the
+    same backoff and persistence path. A manual call is allowed during a backoff
+    — the point of the button is to ask again now — but is rate-limited itself so
+    the endpoint cannot be hammered from the page.
+    """
+    with _limits_lock:
+        with _state_lock:
+            waited = time.time() - _state["last_limits_attempt"]
+            if manual and waited < MANUAL_COOLDOWN:
+                return {"ok": False, "cooldown": max(1, round(MANUAL_COOLDOWN - waited))}
+            _state["last_limits_attempt"] = time.time()
+
+        result = limits_api.fetch(CREDENTIALS)
+        persist = None
+        with _state_lock:
+            previous = _state["limits"]
+            interval = _state["limits_interval"] or base_limits_interval()
+            if result.get("ok"):
+                interval = base_limits_interval()
+                current = persist = {**result, "fetched_at": time.time()}
+                _state["next_limits"] = time.time() + interval
+            else:
+                # A failed poll keeps the last good numbers on screen, marked
+                # stale, rather than blanking the gauges over a transient 429.
+                current = (
+                    {**previous, "stale_error": result["error"]}
+                    if previous.get("ok")
+                    else result
+                )
+                if manual:
+                    # Pressing the button must not stretch the automatic
+                    # schedule; only honour an explicit Retry-After.
+                    if result.get("retry_after"):
+                        _state["next_limits"] = max(
+                            _state["next_limits"], time.time() + result["retry_after"]
+                        )
+                else:
+                    interval = min(
+                        LIMITS_MAX_INTERVAL, result.get("retry_after") or interval * 2
+                    )
+                    _state["next_limits"] = time.time() + interval
+                    print(f"limits: {result['error']} — next attempt in {interval}s")
+            _state["limits_interval"] = interval
+            if current != previous:
+                _state["limits"] = current
+                _state["version"] += 1
+
+        if persist:
+            try:
+                with _db_lock:
+                    DB.execute(
+                        "INSERT INTO meta VALUES ('limits', ?)"
+                        " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (json.dumps(persist),),
+                    )
+                    DB.commit()
+            except (sqlite3.Error, TypeError):
+                pass
+        return result
+
+
 def refresher():
     """Watch the transcripts continuously; poll the account endpoint sparingly.
 
-    Transcript polling is local file I/O and costs nothing. The usage endpoint is
-    a remote call that rate-limits, so it runs on its own slow schedule and backs
-    off — doubling up to LIMITS_MAX_INTERVAL — whenever a call fails.
+    Transcript polling is local file I/O and costs nothing, so it stays on a
+    few-second loop. Clients are notified at most once per `notify_seconds`,
+    because an active Claude session appends every few seconds and a redraw per
+    append reads as the page reloading itself.
     """
-    credentials = str(Path(CONFIG["claude_dir"]) / ".credentials.json")
     poll = max(1, int(CONFIG.get("poll_seconds", 3)))
-    base_interval = max(LIMITS_MIN_INTERVAL, int(CONFIG.get("limits_refresh_seconds", 300)))
-    interval = base_interval
-    next_limits = 0.0
+    notify_every = max(1, int(CONFIG.get("notify_seconds", 10)))
 
     with _db_lock:
         ingest.import_lifetime(DB, CONFIG["claude_dir"])
         ingest.ingest(DB, CONFIG["claude_dir"])
 
     while True:
-        changed = False
         try:
             with _db_lock:
                 if ingest.ingest(DB, CONFIG["claude_dir"]):
-                    changed = True
+                    with _state_lock:
+                        _state["version"] += 1
         except sqlite3.Error as exc:
             print(f"ingest error: {exc}")
 
-        if time.time() >= next_limits:
-            result = limits_api.fetch(credentials)
-            persist = None
-            with _state_lock:
-                previous = _state["limits"]
-                if result.get("ok"):
-                    interval = base_interval
-                    current = persist = {**result, "fetched_at": time.time()}
-                else:
-                    interval = min(
-                        LIMITS_MAX_INTERVAL, result.get("retry_after") or interval * 2
-                    )
-                    # A failed poll keeps the last good numbers on screen, marked
-                    # stale, rather than blanking the gauges over a transient 429.
-                    current = (
-                        {**previous, "stale_error": result["error"]}
-                        if previous.get("ok")
-                        else result
-                    )
-                    print(f"limits: {result['error']} — next attempt in {interval}s")
-                if current != previous:
-                    _state["limits"] = current
-                    changed = True
-            if persist:
-                try:
-                    with _db_lock:
-                        DB.execute(
-                            "INSERT INTO meta VALUES ('limits', ?)"
-                            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                            (json.dumps(persist),),
-                        )
-                        DB.commit()
-                except (sqlite3.Error, TypeError):
-                    pass
-            next_limits = time.time() + interval
+        with _state_lock:
+            due = time.time() >= _state["next_limits"]
+        if due:
+            refresh_limits()
 
-        if changed:
-            with _state_lock:
-                _state["version"] += 1
+        # Coalesce: publish the newest version, never more often than the
+        # interval, and never drop the last change.
+        with _state_lock:
+            pending = _state["version"] != _state["published"]
+            if pending and time.time() - _state["published_at"] >= notify_every:
+                _state["published"] = _state["version"]
+                _state["published_at"] = time.time()
         time.sleep(poll)
 
 
@@ -593,6 +643,24 @@ class Handler(BaseHTTPRequestHandler):
 
         return self._send(404, b"not found", "text/plain; charset=utf-8")
 
+    def do_POST(self):
+        if urlparse(self.path).path != "/api/refresh":
+            return self._send(404, b"not found", "text/plain; charset=utf-8")
+        result = refresh_limits(manual=True)
+        with _state_lock:
+            limits = dict(_state["limits"])
+            next_in = max(0, round(_state["next_limits"] - time.time()))
+        payload = json.dumps(
+            {
+                "ok": bool(result.get("ok")),
+                "cooldown": result.get("cooldown"),
+                "error": result.get("error"),
+                "limits": limits,
+                "next_automatic_in": next_in,
+            }
+        ).encode()
+        return self._send(200, payload, "application/json")
+
     def stream(self):
         # No Content-Length, so the body is framed by the connection closing —
         # EventSource reads until EOF and reconnects on its own.
@@ -607,7 +675,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             while True:
                 with _state_lock:
-                    version = _state["version"]
+                    version = _state["published"]
                 if version != sent:
                     sent = version
                     self.wfile.write(f"event: update\ndata: {version}\n\n".encode())

@@ -59,7 +59,16 @@ h2 { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: 0.02em; text-
 
 section { margin-bottom: 22px; }
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.head-actions { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 .note { color: var(--muted); font-size: 12px; }
+
+.ghost-button {
+    appearance: none; background: var(--surface); color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 7px;
+    font: inherit; font-size: 12px; padding: 3px 10px; cursor: pointer;
+}
+.ghost-button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+.ghost-button:disabled { opacity: .5; cursor: default; }
 
 /* --- limits ------------------------------------------------------------- */
 
@@ -176,7 +185,10 @@ main { transition: opacity .15s ease; }
     <section>
         <div class="section-head">
             <h2>Plan limits</h2>
-            <span class="note" id="limits-note"></span>
+            <div class="head-actions">
+                <span class="note" id="limits-note"></span>
+                <button type="button" id="refresh-limits" class="ghost-button">Refresh</button>
+            </div>
         </div>
         <div class="limits" id="limits"></div>
     </section>
@@ -509,6 +521,7 @@ function renderHourly(hours) {
 
 function updateLimitsNote() {
     const note = document.getElementById("limits-note");
+    if (Number(note.dataset.hold || 0) > Date.now()) return;   // a transient message is showing
     const at = Number(note.dataset.fetchedAt || 0);
     if (!at) return;
     const age = Math.max(0, Date.now() / 1000 - at);
@@ -845,10 +858,13 @@ function render(snap) {
     tickCountdowns();
 }
 
-async function load() {
+async function load(background) {
     if (state.fetching) { state.pending = true; return; }   // never drop the last update
     state.fetching = true;
-    document.body.classList.add("loading");
+    // Only a deliberate action dims the page. Background refreshes swap the
+    // numbers in silently — an active session appends constantly, and dimming
+    // on each one looks like the page reloading itself.
+    if (!background) document.body.classList.add("loading");
     try {
         const url = `/api/snapshot?range=${encodeURIComponent(state.range)}&project=${encodeURIComponent(state.project)}`;
         const response = await fetch(url);
@@ -860,7 +876,7 @@ async function load() {
     } finally {
         state.fetching = false;
         document.body.classList.remove("loading");
-        if (state.pending) { state.pending = false; load(); }
+        if (state.pending) { state.pending = false; load(true); }
     }
 }
 
@@ -879,8 +895,34 @@ window.addEventListener("resize", () => {
     }, 120);
 });
 
+document.getElementById("refresh-limits").addEventListener("click", async event => {
+    const button = event.currentTarget;
+    const note = document.getElementById("limits-note");
+    button.disabled = true;
+    button.textContent = "Refreshing…";
+    try {
+        const response = await fetch("/api/refresh", { method: "POST" });
+        const result = await response.json();
+        if (result.cooldown) {
+            note.dataset.hold = Date.now() + 4000;
+            note.className = "note";
+            note.textContent = `just asked — try again in ${result.cooldown}s`;
+        } else {
+            note.dataset.hold = 0;
+            await load();
+        }
+    } catch (err) {
+        note.dataset.hold = Date.now() + 4000;
+        note.className = "note error";
+        note.textContent = "refresh failed — is the server still running?";
+    } finally {
+        button.disabled = false;
+        button.textContent = "Refresh";
+    }
+});
+
 const stream = new EventSource("/api/stream");
-stream.addEventListener("update", () => load());
+stream.addEventListener("update", () => load(true));
 stream.addEventListener("error", () => {
     document.getElementById("live-dot").className = "dot";
 });
