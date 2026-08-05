@@ -1,7 +1,7 @@
 {
   "host": "127.0.0.1",
   "port": 7581,
-  "claude_dir": "/home/you/.claude",
+  "claude_dir": "~/.claude",
   "poll_seconds": 3,
   "notify_seconds": 10,
   "limits_refresh_seconds": 300,

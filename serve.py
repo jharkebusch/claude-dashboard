@@ -26,7 +26,9 @@ PRICING = json.loads((BASE / "pricing.json").read_text())
 
 # Environment overrides, so the same config.json works on the host and in a
 # container where the paths and bind address differ.
-CONFIG["claude_dir"] = os.environ.get("CLAUDE_DIR", CONFIG["claude_dir"])
+CONFIG["claude_dir"] = os.path.expanduser(
+    os.environ.get("CLAUDE_DIR", CONFIG["claude_dir"])
+)
 CONFIG["host"] = os.environ.get("DASHBOARD_HOST", CONFIG["host"])
 CONFIG["port"] = int(os.environ.get("DASHBOARD_PORT", CONFIG["port"]))
 DATA = Path(os.environ.get("DATA_DIR", str(BASE / "data")))
@@ -119,7 +121,7 @@ def row_cost(row):
 
 
 def short_path(cwd):
-    """~/Projects/acme/release — the home prefix carries no information.
+    """/home/you/code/api -> ~/code/api; the home prefix carries no information.
 
     Matched against the recorded path rather than the running environment: in a
     container there is no home directory to expand, and the paths in the

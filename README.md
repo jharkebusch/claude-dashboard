@@ -6,6 +6,11 @@ A local, live dashboard for Claude Code token usage: total tokens, the current
 dependencies, no build step, nothing leaves the machine except the call that reads
 your own plan limits.
 
+> **Unsupported by design.** Everything here reads Claude Code's own local files
+> and one endpoint the CLI uses for `/usage`, none of which is a published API.
+> It can change or stop working without notice. Nothing is written to Claude
+> Code's state — the transcripts are only ever read.
+
 ```bash
 python3 serve.py       # http://127.0.0.1:7581
 ```
@@ -24,16 +29,21 @@ failed press never stretches the automatic backoff; a successful one resets it.
 ## Docker
 
 ```bash
-docker compose up -d --build     # http://127.0.0.1:7581
+docker compose up -d             # http://127.0.0.1:7581
 docker compose logs -f           # follow
 docker compose down              # stop
 ```
 
 The container mounts `~/.claude` **read-only** and keeps its database in a named
 volume (`dashboard-data`), so it never writes to Claude Code's state. It runs as
-uid 1000 — that is what makes the 0600 credentials file readable, so if your user
-is not uid 1000, change `user:` in `compose.yaml` to match `id -u`. The published
-port is bound to `127.0.0.1`, same as the host run.
+uid 1000 — that is what makes the 0600 credentials file readable. If your user is
+not uid 1000, pass your own:
+
+```bash
+DASHBOARD_UID=$(id -u) DASHBOARD_GID=$(id -g) docker compose up -d
+```
+
+The published port is bound to `127.0.0.1`, same as the host run.
 
 Both ways of running it use the same `config.json`; the container overrides only
 the paths and bind address through `CLAUDE_DIR`, `DATA_DIR`, `DASHBOARD_HOST` and
@@ -61,8 +71,11 @@ are still real spend, so they stay in every total and appear in the sessions
 table marked `auto`. The signal is the `entrypoint` each transcript records —
 `cli` for a session you type in, `sdk-py` for one a plugin started.
 
-Two details worth knowing:
+Three details worth knowing:
 
+- **One API response is written as several assistant records**, one per content
+  block, each carrying an identical copy of `usage`. Rows are keyed on the request
+  id for that reason — summing the records naively roughly triples every figure.
 - **Transcripts are pruned after about a month.** That is why all-time figures lean
   on the stats cache; the daily chart, sessions and projects only cover the window
   the transcripts still hold (shown in the footer).
@@ -110,7 +123,7 @@ recovery is picked up on its own; **Refresh** forces the question immediately.
 | Key | Meaning |
 |---|---|
 | `host`, `port` | Bind address. `127.0.0.1` keeps it off the network. |
-| `claude_dir` | Where Claude Code keeps its state |
+| `claude_dir` | Where Claude Code keeps its state. `~` is expanded, and `CLAUDE_DIR` overrides it. |
 | `poll_seconds` | How often transcripts are checked (a full pass over ~650 files is a few ms) |
 | `notify_seconds` | Shortest gap between pushes to the page. An active session appends every few seconds; redrawing on each one reads as the page reloading itself, so updates are coalesced. |
 | `limits_refresh_seconds` | How often the account endpoint is called. Default 300, floored at 120 — it rate-limits, and the reset times it returns only move once every few hours. |
