@@ -8,6 +8,7 @@ ingest.py keeps in step with ~/.claude/projects. Standard library only.
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -37,6 +38,8 @@ WEEK_WINDOW = timedelta(days=7)
 LIMITS_MIN_INTERVAL = 120       # floor for the account endpoint, in seconds
 LIMITS_MAX_INTERVAL = 900       # ceiling the backoff climbs to after failures
 MANUAL_COOLDOWN = 15            # shortest gap between manual refreshes
+ACTIVE_WINDOW = 300             # a session counts as running if it wrote this recently
+HOME_PREFIX = re.compile(r"^(/home/[^/]+|/Users/[^/]+|/root)(?=/|$)")
 CREDENTIALS = str(Path(CONFIG["claude_dir"]) / ".credentials.json")
 
 _db_lock = threading.Lock()
@@ -112,6 +115,16 @@ def row_cost(row):
     return cost_of(
         row["model"], row["input"], row["output"], row["cache_read"], row["w5m"], row["w1h"]
     )
+
+
+def short_path(cwd):
+    """~/Projects/acme/release — the home prefix carries no information.
+
+    Matched against the recorded path rather than the running environment: in a
+    container there is no home directory to expand, and the paths in the
+    transcripts are the host's either way.
+    """
+    return HOME_PREFIX.sub("~", cwd, count=1) if cwd else ""
 
 
 def model_label(model):
@@ -421,7 +434,7 @@ def build_snapshot(range_key, project):
         "hourly": hourly,
         "projects": projects,
         "sessions": recent_sessions(scope, params),
-        "current_session": current_session(),
+        "live_sessions": live_sessions(),
         "cost_enabled": bool(CONFIG.get("show_cost", True)),
         "other_color": OTHER_COLOR,
     }
@@ -450,6 +463,10 @@ def _session_rows(sql, params):
             "id": r["session_id"],
             "title": r["title"] or "",
             "project": r["project"] or "",
+            # The project label is only the last path segment, so a session run
+            # in a subdirectory reads as "release" rather than the repo it is in.
+            # Carry the working directory too, shortened for display.
+            "path": short_path(r["cwd"] or ""),
             "branch": r["branch"] or "",
             "models": sorted({model_label(m) for m in (r["models"] or "").split(",") if m}),
             "turns": r["requests"] or 0,
@@ -464,7 +481,7 @@ def _session_rows(sql, params):
 
 SESSION_SELECT = (
     "SELECT r.session_id AS session_id, MIN(ts_epoch) AS start, MAX(ts_epoch) AS end,"
-    " MAX(project) AS project, MAX(branch) AS branch,"
+    " MAX(project) AS project, MAX(cwd) AS cwd, MAX(branch) AS branch,"
     " GROUP_CONCAT(DISTINCT model) AS models, t.title AS title,"
     f" {TOKEN_SUM}"
     " FROM requests r LEFT JOIN titles t ON t.session_id = r.session_id"
@@ -477,29 +494,51 @@ def recent_sessions(scope, params):
     )
 
 
-def current_session():
-    latest = query("SELECT session_id FROM requests ORDER BY ts_epoch DESC LIMIT 1")
-    if not latest or not latest[0]["session_id"]:
-        return None
+def live_sessions(limit=8):
+    """Every session that has written recently, not just the newest one.
+
+    Several Claude Code windows commonly run at once — one per project — and each
+    appends to its own transcript, so picking the single most recent request made
+    the panel flip between them. When nothing is running, the most recent session
+    stands in so the panel is never empty.
+    """
+    cutoff = time.time() - ACTIVE_WINDOW
     rows = _session_rows(
-        f"{SESSION_SELECT} WHERE r.session_id = ? GROUP BY r.session_id", (latest[0]["session_id"],)
+        f"{SESSION_SELECT} GROUP BY r.session_id HAVING MAX(ts_epoch) >= ?"
+        " ORDER BY end DESC LIMIT ?",
+        (cutoff, limit),
     )
     if not rows:
-        return None
-    session = rows[0]
-    detail = query(
-        f"SELECT {TOKEN_SUM} FROM requests WHERE session_id = ?", (latest[0]["session_id"],)
-    )[0]
-    session.update(
-        {
-            "input": detail["input"] or 0,
-            "output": detail["output"] or 0,
-            "cache_read": detail["cache_read"] or 0,
-            "cache_write": (detail["w5m"] or 0) + (detail["w1h"] or 0),
-            "active": (time.time() - datetime.fromisoformat(session["end"]).timestamp()) < 300,
-        }
-    )
-    return session
+        rows = _session_rows(
+            f"{SESSION_SELECT} GROUP BY r.session_id ORDER BY end DESC LIMIT 1", ()
+        )
+    ids = [r["id"] for r in rows if r["id"]]
+    if not ids:
+        return []
+
+    marks = ",".join("?" * len(ids))
+    detail = {
+        d["session_id"]: d
+        for d in query(
+            f"SELECT session_id, {TOKEN_SUM} FROM requests"
+            f" WHERE session_id IN ({marks}) GROUP BY session_id",
+            ids,
+        )
+    }
+    now = time.time()
+    for row in rows:
+        d = detail.get(row["id"])
+        if d:
+            row.update(
+                {
+                    "input": d["input"] or 0,
+                    "output": d["output"] or 0,
+                    "cache_read": d["cache_read"] or 0,
+                    "cache_write": (d["w5m"] or 0) + (d["w1h"] or 0),
+                }
+            )
+        row["active"] = (now - datetime.fromisoformat(row["end"]).timestamp()) < ACTIVE_WINDOW
+    return rows
 
 
 # --- background refresh ----------------------------------------------------

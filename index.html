@@ -113,6 +113,7 @@ select:hover { color: var(--ink); }
 
 /* --- session ------------------------------------------------------------ */
 
+.session-list { display: grid; gap: var(--gap); }
 .session-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
 .session-title { font-size: 15px; font-weight: 600; }
 .session-path { color: var(--muted); font-size: 12px; }
@@ -204,8 +205,8 @@ main { transition: opacity .15s ease; }
     </section>
 
     <section>
-        <div class="section-head"><h2>Current session</h2><span class="note" id="session-age"></span></div>
-        <div class="card" id="session"></div>
+        <div class="section-head"><h2 id="session-heading">Current session</h2><span class="note" id="session-age"></span></div>
+        <div class="session-list" id="session"></div>
     </section>
 
     <section>
@@ -651,25 +652,18 @@ function renderTiles(snap) {
             : `${fmtInt(r.sessions)} sessions · ${fmtTokens(r.sidechain_tokens)} in subagents`));
 }
 
-function renderSession(snap) {
-    const host = document.getElementById("session");
-    const age = document.getElementById("session-age");
-    host.textContent = "";
-    const s = snap.current_session;
-    if (!s) {
-        host.appendChild(el("div", { class: "note", text: "No sessions recorded yet." }));
-        age.textContent = "";
-        return;
-    }
-    const seconds = (Date.now() - new Date(s.end).getTime()) / 1000;
-    age.textContent = s.active ? "live now" : `last activity ${fmtDuration(seconds)} ago`;
-
+function sessionCard(s, showCost) {
+    const card = el("div", { class: "card" });
     const top = el("div", { class: "session-top" });
     top.appendChild(el("span", { class: "dot" + (s.active ? " live" : "") }));
     top.appendChild(el("span", { class: "session-title", text: s.title || "Untitled session" }));
-    top.appendChild(el("span", { class: "session-path", text: `${s.project}${s.branch ? " · " + s.branch : ""}` }));
+    top.appendChild(el("span", { class: "session-path", text: `${s.path || s.project}${s.branch ? " · " + s.branch : ""}` }));
     for (const m of s.models) top.appendChild(el("span", { class: "chip", text: m }));
-    host.appendChild(top);
+    if (!s.active) {
+        const idle = (Date.now() - new Date(s.end).getTime()) / 1000;
+        top.appendChild(el("span", { class: "session-path", text: `idle ${fmtDuration(idle)}` }));
+    }
+    card.appendChild(top);
 
     const grid = el("div", { class: "session-grid" });
     const cells = [
@@ -680,11 +674,42 @@ function renderSession(snap) {
         ["Cache write", fmtTokens(s.cache_write)],
         ["Duration", fmtDuration((new Date(s.end) - new Date(s.start)) / 1000)]
     ];
-    if (snap.cost_enabled) cells.push(["API-equivalent", fmtUSD(s.cost)]);
+    if (showCost) cells.push(["API-equivalent", fmtUSD(s.cost)]);
     for (const [label, value] of cells) {
         grid.appendChild(el("div", {}, [el("span", { text: label }), el("b", { text: value })]));
     }
-    host.appendChild(grid);
+    card.appendChild(grid);
+    return card;
+}
+
+function renderLiveSessions(snap) {
+    const host = document.getElementById("session");
+    const heading = document.getElementById("session-heading");
+    const age = document.getElementById("session-age");
+    host.textContent = "";
+
+    const list = snap.live_sessions || [];
+    if (!list.length) {
+        heading.textContent = "Current session";
+        age.textContent = "";
+        host.appendChild(el("div", { class: "card note", text: "No sessions recorded yet." }));
+        return;
+    }
+
+    // Several Claude Code windows can run at once — show each of them.
+    const running = list.filter(s => s.active);
+    heading.textContent = running.length > 1 ? "Current sessions" : "Current session";
+    if (running.length) {
+        const tokens = running.reduce((sum, s) => sum + s.tokens, 0);
+        age.textContent = running.length > 1
+            ? `${running.length} running · ${fmtTokens(tokens)} tokens between them`
+            : "live now";
+    } else {
+        const idle = (Date.now() - new Date(list[0].end).getTime()) / 1000;
+        age.textContent = `nothing running · last activity ${fmtDuration(idle)} ago`;
+    }
+
+    for (const s of list) host.appendChild(sessionCard(s, snap.cost_enabled));
 }
 
 function renderDailyExtras(snap) {
@@ -805,7 +830,9 @@ function renderSessions(snap) {
     for (const s of snap.sessions) {
         const row = el("tr");
         row.appendChild(el("td", { class: "name", text: s.title || "Untitled" }));
-        row.appendChild(el("td", { class: "muted", text: s.project + (s.branch ? " · " + s.branch : "") }));
+        const where = el("td", { class: "muted", text: s.project + (s.branch ? " · " + s.branch : "") });
+        if (s.path) where.title = s.path;
+        row.appendChild(where);
         row.appendChild(el("td", { class: "muted", text: s.models.join(", ") }));
         row.appendChild(el("td", { class: "num", text: fmtInt(s.turns) }));
         row.appendChild(el("td", { class: "num", text: fmtInt(s.tokens) }));
@@ -868,7 +895,7 @@ function render(snap) {
     renderFilters(snap);
     renderLimits(snap);
     renderTiles(snap);
-    renderSession(snap);
+    renderLiveSessions(snap);
     renderDailyExtras(snap);
     renderDaily(snap.daily, snap.models, snap.other_color);
     renderHourly(snap.hourly);
