@@ -1,0 +1,21 @@
+services:
+  dashboard:
+    build: .
+    image: claude-dashboard:latest
+    container_name: claude-dashboard
+    # Must match the owner of ~/.claude — the credentials file is 0600.
+    user: "1000:1000"
+    ports:
+      # Host-side 127.0.0.1 keeps it off the network, as on the host run.
+      - "127.0.0.1:7581:7581"
+    volumes:
+      - ${HOME}/.claude:/claude:ro
+      - dashboard-data:/data
+    environment:
+      CLAUDE_DIR: /claude
+      DATA_DIR: /data
+      DASHBOARD_HOST: 0.0.0.0
+    stop_grace_period: 5s
+
+volumes:
+  dashboard-data:

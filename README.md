@@ -14,6 +14,27 @@ The page updates itself: the server watches the transcript files and pushes an
 event the moment a new request lands, so a session in another terminal shows up
 within a few seconds.
 
+## Docker
+
+```bash
+docker compose up -d --build     # http://127.0.0.1:7581
+docker compose logs -f           # follow
+docker compose down              # stop
+```
+
+The container mounts `~/.claude` **read-only** and keeps its database in a named
+volume (`dashboard-data`), so it never writes to Claude Code's state. It runs as
+uid 1000 — that is what makes the 0600 credentials file readable, so if your user
+is not uid 1000, change `user:` in `compose.yaml` to match `id -u`. The published
+port is bound to `127.0.0.1`, same as the host run.
+
+Both ways of running it use the same `config.json`; the container overrides only
+the paths and bind address through `CLAUDE_DIR`, `DATA_DIR`, `DASHBOARD_HOST` and
+`DASHBOARD_PORT`. Only one of them can hold port 7581 at a time.
+
+Add `restart: unless-stopped` to `compose.yaml` if you want it to come back with
+the Docker daemon; by default it stays on-demand.
+
 ## Where the numbers come from
 
 | Figure | Source |

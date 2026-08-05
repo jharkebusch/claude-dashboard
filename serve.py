@@ -7,6 +7,7 @@ ingest.py keeps in step with ~/.claude/projects. Standard library only.
 """
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -19,9 +20,15 @@ import ingest
 import limits as limits_api
 
 BASE = Path(__file__).resolve().parent
-DATA = BASE / "data"
 CONFIG = json.loads((BASE / "config.json").read_text())
 PRICING = json.loads((BASE / "pricing.json").read_text())
+
+# Environment overrides, so the same config.json works on the host and in a
+# container where the paths and bind address differ.
+CONFIG["claude_dir"] = os.environ.get("CLAUDE_DIR", CONFIG["claude_dir"])
+CONFIG["host"] = os.environ.get("DASHBOARD_HOST", CONFIG["host"])
+CONFIG["port"] = int(os.environ.get("DASHBOARD_PORT", CONFIG["port"]))
+DATA = Path(os.environ.get("DATA_DIR", str(BASE / "data")))
 
 RANGES = {"24h": 1, "7d": 7, "30d": 30, "90d": 90, "all": None}
 OTHER_COLOR = "#8a8a86"
@@ -32,7 +39,7 @@ _db_lock = threading.Lock()
 _state_lock = threading.Lock()
 _state = {"version": 0, "limits": {"ok": False, "error": "not fetched yet"}}
 
-DATA.mkdir(exist_ok=True)
+DATA.mkdir(parents=True, exist_ok=True)
 DB = ingest.connect(str(DATA / "usage.db"))
 
 TOKEN_SUM = (
