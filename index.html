@@ -1,0 +1,875 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude usage</title>
+<style>
+:root {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --accent: #3987e5;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+    --radius: 10px;
+    --gap: 16px;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+}
+
+main { max-width: 1240px; margin: 0 auto; padding: 24px 20px 64px; }
+
+h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 13px; font-weight: 600; margin: 0; letter-spacing: 0.02em; text-transform: uppercase; color: var(--ink-2); }
+
+.head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap; margin-bottom: 20px;
+}
+.head-meta { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 8px; }
+
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); display: inline-block; }
+.dot.live { background: var(--good); box-shadow: 0 0 0 3px rgba(12, 163, 12, 0.18); }
+
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+}
+
+section { margin-bottom: 22px; }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.note { color: var(--muted); font-size: 12px; }
+
+/* --- limits ------------------------------------------------------------- */
+
+.limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--gap); }
+.limit-label { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.limit-label span:first-child { color: var(--ink-2); font-size: 13px; }
+.limit-pct { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
+.meter { height: 8px; border-radius: 4px; overflow: hidden; margin: 10px 0 8px; }
+.meter > div { height: 100%; border-radius: 0 4px 4px 0; transition: width .4s ease; }
+.limit-foot { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; }
+.limit-foot b { color: var(--ink-2); font-weight: 500; }
+
+/* --- filters ------------------------------------------------------------ */
+
+.filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+.segmented { display: inline-flex; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
+.segmented button {
+    appearance: none; border: 0; background: transparent; color: var(--ink-2);
+    font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
+}
+.segmented button:hover { background: rgba(255, 255, 255, 0.05); color: var(--ink); }
+.segmented button[aria-pressed="true"] { background: rgba(255, 255, 255, 0.12); color: var(--ink); font-weight: 600; }
+select {
+    appearance: none; background: var(--surface); color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 30px 6px 10px;
+    font: inherit; font-size: 13px; cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: calc(100% - 15px) 14px, calc(100% - 10px) 14px;
+    background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+}
+select:hover { color: var(--ink); }
+
+/* --- tiles -------------------------------------------------------------- */
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--gap); }
+.tile-label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.tile-value { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+.tile-sub { color: var(--muted); font-size: 12px; margin-top: 6px; }
+.tile.hero { grid-column: span 2; }
+.tile.hero .tile-value { font-size: 52px; letter-spacing: -0.03em; }
+@media (max-width: 640px) { .tile.hero { grid-column: span 1; } .tile.hero .tile-value { font-size: 38px; } }
+
+/* --- session ------------------------------------------------------------ */
+
+.session-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.session-title { font-size: 15px; font-weight: 600; }
+.session-path { color: var(--muted); font-size: 12px; }
+.session-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 14px; margin-top: 14px; }
+.session-grid div span { display: block; color: var(--muted); font-size: 11px; }
+.session-grid div b { font-weight: 600; font-size: 16px; font-variant-numeric: tabular-nums; }
+
+.chip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2);
+    background: rgba(255, 255, 255, 0.06); border-radius: 20px; padding: 2px 9px;
+}
+.swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+/* --- charts ------------------------------------------------------------- */
+
+.legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+.legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+.chart { width: 100%; display: block; }
+.chart text { font-size: 11px; fill: var(--muted); }
+.chart .hit { fill: transparent; cursor: pointer; outline: none; }
+.chart .hit:focus-visible { fill: rgba(255, 255, 255, 0.045); }
+.chart .peak-label { fill: var(--ink-2); font-weight: 600; }
+
+details { margin-top: 12px; }
+summary { color: var(--muted); font-size: 12px; cursor: pointer; width: fit-content; }
+summary:hover { color: var(--ink-2); }
+
+/* --- tables ------------------------------------------------------------- */
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.name { color: var(--ink); }
+.bar-cell { width: 34%; min-width: 90px; }
+.bar-track { background: rgba(255, 255, 255, 0.07); height: 8px; border-radius: 4px; overflow: hidden; }
+.bar-fill { height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+.wrap { overflow-x: auto; }
+.muted { color: var(--muted); }
+
+/* --- tooltip ------------------------------------------------------------ */
+
+#tip {
+    position: fixed; z-index: 40; pointer-events: none; opacity: 0;
+    background: #232321; border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 11px; font-size: 12px; color: var(--ink-2);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); max-width: 260px;
+    transition: opacity .12s ease;
+}
+#tip.on { opacity: 1; }
+#tip .tip-head { color: var(--ink); font-weight: 600; margin-bottom: 5px; }
+#tip .tip-row { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+#tip .tip-row b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+#tip .key { width: 10px; height: 2px; border-radius: 1px; flex: none; }
+
+body.loading main { opacity: .55; }
+main { transition: opacity .15s ease; }
+.error { color: var(--serious); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+    <div class="head">
+        <h1>Claude usage</h1>
+        <div class="head-meta"><span class="dot" id="live-dot"></span><span id="updated">connecting…</span></div>
+    </div>
+
+    <section>
+        <div class="section-head">
+            <h2>Plan limits</h2>
+            <span class="note" id="limits-note"></span>
+        </div>
+        <div class="limits" id="limits"></div>
+    </section>
+
+    <div class="filters">
+        <div class="segmented" id="ranges" role="group" aria-label="Time range"></div>
+        <select id="project" aria-label="Project"></select>
+        <span class="note" id="scope-note"></span>
+    </div>
+
+    <section>
+        <div class="tiles" id="tiles"></div>
+    </section>
+
+    <section>
+        <div class="section-head"><h2>Current session</h2><span class="note" id="session-age"></span></div>
+        <div class="card" id="session"></div>
+    </section>
+
+    <section>
+        <div class="card">
+            <div class="section-head">
+                <h2>Tokens per day</h2>
+                <span class="note" id="daily-note"></span>
+            </div>
+            <div class="legend" id="daily-legend"></div>
+            <svg class="chart" id="daily-chart" role="img" aria-label="Tokens per day by model"></svg>
+            <details>
+                <summary>Data table</summary>
+                <div class="wrap"><table id="daily-table"></table></div>
+            </details>
+        </div>
+    </section>
+
+    <section>
+        <div class="card">
+            <div class="section-head"><h2>Today by hour</h2><span class="note" id="hourly-note"></span></div>
+            <svg class="chart" id="hourly-chart" role="img" aria-label="Tokens per hour today"></svg>
+        </div>
+    </section>
+
+    <section>
+        <div class="card">
+            <div class="section-head"><h2>By model</h2><span class="note" id="models-note"></span></div>
+            <div class="wrap"><table id="models-table"></table></div>
+        </div>
+    </section>
+
+    <section>
+        <div class="card">
+            <div class="section-head"><h2>By project</h2><span class="note">Transcript window only</span></div>
+            <div class="wrap"><table id="projects-table"></table></div>
+        </div>
+    </section>
+
+    <section>
+        <div class="card">
+            <div class="section-head"><h2>Recent sessions</h2><span class="note" id="sessions-note"></span></div>
+            <div class="wrap"><table id="sessions-table"></table></div>
+        </div>
+    </section>
+
+    <p class="note" id="footnote"></p>
+</main>
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script>
+"use strict";
+
+const RANGES = [["24h", "24h"], ["7d", "7 days"], ["30d", "30 days"], ["90d", "90 days"], ["all", "All time"]];
+const state = { range: "30d", project: "all", snap: null, fetching: false };
+const tip = document.getElementById("tip");
+
+/* --- formatting ---------------------------------------------------------- */
+
+const fmtInt = n => (n || 0).toLocaleString("en-US");
+
+function fmtTokens(n) {
+    n = n || 0;
+    if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 1 : 2) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e8 ? 0 : 1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e5 ? 0 : 1) + "K";
+    return String(Math.round(n));
+}
+
+function fmtUSD(n) {
+    n = n || 0;
+    if (n >= 1000) return "$" + Math.round(n).toLocaleString("en-US");
+    return "$" + n.toFixed(2);
+}
+
+function fmtDuration(sec) {
+    sec = Math.max(0, Math.round(sec));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    if (h >= 24) return Math.floor(h / 24) + "d " + (h % 24) + "h";
+    if (h) return h + "h " + m + "m";
+    if (m) return m + "m";
+    return sec + "s";
+}
+
+function fmtDay(iso) {
+    const d = new Date(iso + "T00:00:00");
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+function fmtClock(iso) {
+    return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtStamp(iso) {
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" }) + " " + fmtClock(iso);
+}
+
+function el(tag, props, kids) {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(props || {})) {
+        if (k === "text") node.textContent = v;
+        else if (k === "class") node.className = v;
+        else if (k === "style") node.style.cssText = v;
+        else node.setAttribute(k, v);
+    }
+    for (const kid of kids || []) node.appendChild(kid);
+    return node;
+}
+
+const svgEl = (tag, attrs) => {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+    return node;
+};
+
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+/* --- tooltip ------------------------------------------------------------- */
+
+function showTip(target, head, rows) {
+    tip.textContent = "";
+    tip.appendChild(el("div", { class: "tip-head", text: head }));
+    for (const r of rows) {
+        const line = el("div", { class: "tip-row" });
+        if (r.color) line.appendChild(el("span", { class: "key", style: `background:${r.color}` }));
+        line.appendChild(el("b", { text: r.value }));
+        line.appendChild(el("span", { text: r.label }));
+        tip.appendChild(line);
+    }
+    const box = target.getBoundingClientRect();
+    tip.classList.add("on");
+    const tipBox = tip.getBoundingClientRect();
+    let left = box.left + box.width / 2 - tipBox.width / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - tipBox.width - 8));
+    let top = box.top - tipBox.height - 10;
+    if (top < 8) top = box.bottom + 10;
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+}
+
+const hideTip = () => tip.classList.remove("on");
+
+/* --- charts -------------------------------------------------------------- */
+
+function niceMax(value) {
+    if (value <= 0) return 1;
+    const exp = Math.pow(10, Math.floor(Math.log10(value)));
+    const scaled = value / exp;
+    const step = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
+    return step * exp;
+}
+
+function roundedTop(x, y, w, h, r) {
+    r = Math.min(r, w / 2, h);
+    return `M${x},${y + h}V${y + r}a${r},${r} 0 0 1 ${r},${-r}h${w - 2 * r}a${r},${r} 0 0 1 ${r},${r}V${y + h}Z`;
+}
+
+const GAP = 2;          // surface gap between touching marks
+const MAX_BAR = 24;     // bars never fill their band
+const CHART_H = 200;
+
+function drawAxis(svg, width, height, max, pad) {
+    const ticks = 4;
+    for (let i = 0; i <= ticks; i++) {
+        const value = (max / ticks) * i;
+        const y = height - pad.bottom - (value / max) * (height - pad.top - pad.bottom);
+        svg.appendChild(svgEl("line", {
+            x1: pad.left, x2: width - pad.right, y1: y, y2: y,
+            stroke: i === 0 ? css("--axis") : css("--grid"), "stroke-width": 1
+        }));
+        const label = svgEl("text", { x: pad.left - 8, y: y + 4, "text-anchor": "end" });
+        label.textContent = fmtTokens(value);
+        svg.appendChild(label);
+    }
+}
+
+function renderDaily(days, models, otherColor) {
+    const svg = document.getElementById("daily-chart");
+    svg.textContent = "";
+    const width = svg.clientWidth || svg.parentNode.clientWidth;
+    if (!width || !days.length) return;
+    const pad = { top: 12, right: 8, bottom: 26, left: 52 };
+    const height = CHART_H;
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("height", height);
+
+    const order = models.filter(m => m.mapped).map(m => m.model);
+    const max = niceMax(Math.max(...days.map(d => d.total)));
+    drawAxis(svg, width, height, max, pad);
+
+    const plotW = width - pad.left - pad.right;
+    const plotH = height - pad.top - pad.bottom;
+    const band = plotW / days.length;
+    const barW = Math.min(MAX_BAR, Math.max(3, band - 4));
+    const colorOf = id => (models.find(m => m.model === id) || {}).color || otherColor;
+    const labelOf = id => (models.find(m => m.model === id) || {}).label || id;
+    const every = Math.ceil(days.length / 8);
+
+    days.forEach((day, i) => {
+        const cx = pad.left + band * i + band / 2;
+        const x = cx - barW / 2;
+
+        const keys = Object.keys(day.by_model).sort((a, b) => {
+            const ai = order.indexOf(a), bi = order.indexOf(b);
+            return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+        });
+        let y = height - pad.bottom;
+        keys.forEach((key, idx) => {
+            const h = (day.by_model[key] / max) * plotH;
+            if (h <= 0) return;
+            const top = y - h;
+            const drawH = Math.max(1, h - (idx === keys.length - 1 ? 0 : GAP));
+            const isTop = idx === keys.length - 1;
+            svg.appendChild(isTop
+                ? svgEl("path", { d: roundedTop(x, top, barW, drawH, 4), fill: colorOf(key) })
+                : svgEl("rect", { x, y: top + (h - drawH), width: barW, height: drawH, fill: colorOf(key) }));
+            y = top;
+        });
+
+        if (i % every === 0) {
+            const label = svgEl("text", { x: cx, y: height - 8, "text-anchor": "middle" });
+            label.textContent = fmtDay(day.date);
+            svg.appendChild(label);
+        }
+
+        const hit = svgEl("rect", {
+            class: "hit", x: pad.left + band * i, y: pad.top,
+            width: band, height: plotH, tabindex: "0",
+            "aria-label": `${fmtDay(day.date)}: ${fmtInt(day.total)} tokens`
+        });
+        const show = () => {
+            hit.style.fill = "rgba(255,255,255,0.045)";
+            showTip(hit, fmtDay(day.date), [
+                { label: "total", value: fmtTokens(day.total) },
+                ...keys.slice().reverse().map(k => ({
+                    label: labelOf(k), value: fmtTokens(day.by_model[k]), color: colorOf(k)
+                }))
+            ]);
+        };
+        const hide = () => { hit.style.fill = ""; hideTip(); };
+        hit.addEventListener("pointerenter", show);
+        hit.addEventListener("focus", show);
+        hit.addEventListener("pointerleave", hide);
+        hit.addEventListener("blur", hide);
+        svg.appendChild(hit);
+    });
+}
+
+function renderHourly(hours) {
+    const svg = document.getElementById("hourly-chart");
+    svg.textContent = "";
+    const width = svg.clientWidth || svg.parentNode.clientWidth;
+    if (!width) return;
+    const pad = { top: 18, right: 8, bottom: 26, left: 52 };
+    const height = 160;
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("height", height);
+
+    const peak = Math.max(...hours.map(h => h.tokens), 1);
+    const max = niceMax(peak);
+    drawAxis(svg, width, height, max, pad);
+
+    const plotW = width - pad.left - pad.right;
+    const plotH = height - pad.top - pad.bottom;
+    const band = plotW / 24;
+    const barW = Math.min(MAX_BAR, Math.max(4, band - GAP * 2));
+    const accent = css("--accent");
+
+    hours.forEach(h => {
+        const cx = pad.left + band * h.hour + band / 2;
+        const x = cx - barW / 2;
+        const barH = (h.tokens / max) * plotH;
+        if (barH > 0) {
+            svg.appendChild(svgEl("path", {
+                d: roundedTop(x, height - pad.bottom - barH, barW, barH, 4), fill: accent
+            }));
+        }
+        if (h.hour % 3 === 0) {
+            const label = svgEl("text", { x: cx, y: height - 8, "text-anchor": "middle" });
+            label.textContent = String(h.hour).padStart(2, "0");
+            svg.appendChild(label);
+        }
+        if (h.tokens === peak && peak > 0) {
+            const label = svgEl("text", {
+                class: "peak-label", x: cx, y: height - pad.bottom - barH - 6, "text-anchor": "middle"
+            });
+            label.textContent = fmtTokens(h.tokens);
+            svg.appendChild(label);
+        }
+
+        const hit = svgEl("rect", {
+            class: "hit", x: pad.left + band * h.hour, y: pad.top,
+            width: band, height: plotH, tabindex: "0",
+            "aria-label": `${String(h.hour).padStart(2, "0")}:00 — ${fmtInt(h.tokens)} tokens`
+        });
+        const show = () => {
+            hit.style.fill = "rgba(255,255,255,0.045)";
+            showTip(hit, String(h.hour).padStart(2, "0") + ":00", [
+                { label: "tokens", value: fmtTokens(h.tokens) },
+                { label: "requests", value: fmtInt(h.requests) }
+            ]);
+        };
+        const hide = () => { hit.style.fill = ""; hideTip(); };
+        hit.addEventListener("pointerenter", show);
+        hit.addEventListener("focus", show);
+        hit.addEventListener("pointerleave", hide);
+        hit.addEventListener("blur", hide);
+        svg.appendChild(hit);
+    });
+}
+
+/* --- sections ------------------------------------------------------------ */
+
+function severity(pct) {
+    if (pct >= 95) return "--critical";
+    if (pct >= 80) return "--serious";
+    if (pct >= 60) return "--warning";
+    return "--good";
+}
+
+function renderLimits(snap) {
+    const host = document.getElementById("limits");
+    const note = document.getElementById("limits-note");
+    host.textContent = "";
+    const limits = snap.limits || {};
+
+    if (!limits.ok) {
+        note.className = "note error";
+        note.textContent = limits.error || "unavailable";
+        host.appendChild(el("div", { class: "card note", text:
+            "Live plan percentages come from your Claude account. They are unavailable right now — the token counts below are measured locally and unaffected." }));
+        return;
+    }
+    note.className = "note";
+    note.textContent = (limits.plan ? limits.plan + " plan · " : "") + "live from your Claude account";
+
+    const gauges = [];
+    if (limits.five_hour) gauges.push({ label: "Session (5 hours)", g: limits.five_hour, w: snap.windows.session });
+    if (limits.seven_day) gauges.push({ label: "Week (all models)", g: limits.seven_day, w: snap.windows.week });
+    if (limits.seven_day_opus) gauges.push({ label: "Week (Opus)", g: limits.seven_day_opus, w: null });
+    for (const s of limits.scoped || []) gauges.push({ label: `Week (${s.label})`, g: s, w: null });
+
+    for (const item of gauges) {
+        const pct = Math.round(item.g.utilization);
+        const color = `var(${severity(pct)})`;
+        const card = el("div", { class: "card" });
+        card.appendChild(el("div", { class: "limit-label" }, [
+            el("span", { text: item.label }),
+            el("span", { class: "limit-pct", text: pct + "%" })
+        ]));
+        const meter = el("div", { class: "meter", style: `background: color-mix(in oklab, ${color} 20%, var(--surface))` });
+        const width = pct <= 0 ? 0 : Math.min(100, Math.max(pct, 1.5));
+        meter.appendChild(el("div", { style: `width:${width}%; background:${color}` }));
+        card.appendChild(meter);
+        const foot = el("div", { class: "limit-foot" });
+        foot.appendChild(el("span", {
+            text: item.w
+                ? fmtTokens(item.w.tokens) + " tokens this window"
+                : (pct > 0 ? "separate weekly bucket" : "unused this week")
+        }));
+        const reset = el("span", { "data-reset": item.g.resets_at || "", text: "" });
+        foot.appendChild(reset);
+        card.appendChild(foot);
+        host.appendChild(card);
+    }
+    tickCountdowns();
+}
+
+function tile(label, value, sub) {
+    return el("div", { class: "card tile" }, [
+        el("div", { class: "tile-label", text: label }),
+        el("div", { class: "tile-value", text: value }),
+        el("div", { class: "tile-sub", text: sub || "" })
+    ]);
+}
+
+function renderTiles(snap) {
+    const host = document.getElementById("tiles");
+    host.textContent = "";
+    const t = snap.totals, r = snap.range_stats;
+    const rangeLabel = (RANGES.find(x => x[0] === snap.range) || [])[1] || snap.range;
+
+    const hero = tile("Tokens all time", fmtTokens(t.tokens),
+        `since ${t.first_day || "—"} · ${fmtInt(t.sessions)} sessions`);
+    hero.classList.add("hero");
+    host.appendChild(hero);
+
+    host.appendChild(tile(`Tokens · ${rangeLabel}`, fmtTokens(r.tokens),
+        `${fmtInt(r.output)} written · ${fmtInt(r.input)} fresh input`));
+    if (snap.cost_enabled) {
+        host.appendChild(tile(`API-equivalent · ${rangeLabel}`, fmtUSD(r.cost),
+            `${fmtUSD(t.cost)} all time · your plan bills none of it`));
+    }
+    host.appendChild(tile("Cache hit rate", (r.cache_hit_rate * 100).toFixed(1) + "%",
+        `${fmtTokens(r.cache_read)} read from cache`));
+    host.appendChild(tile("Requests", r.requests_partial ? fmtInt(r.requests) + "+" : fmtInt(r.requests),
+        r.requests_partial
+            ? `transcript window only · ${fmtInt(r.sessions)} sessions`
+            : `${fmtInt(r.sessions)} sessions · ${fmtTokens(r.sidechain_tokens)} in subagents`));
+}
+
+function renderSession(snap) {
+    const host = document.getElementById("session");
+    const age = document.getElementById("session-age");
+    host.textContent = "";
+    const s = snap.current_session;
+    if (!s) {
+        host.appendChild(el("div", { class: "note", text: "No sessions recorded yet." }));
+        age.textContent = "";
+        return;
+    }
+    const seconds = (Date.now() - new Date(s.end).getTime()) / 1000;
+    age.textContent = s.active ? "live now" : `last activity ${fmtDuration(seconds)} ago`;
+
+    const top = el("div", { class: "session-top" });
+    top.appendChild(el("span", { class: "dot" + (s.active ? " live" : "") }));
+    top.appendChild(el("span", { class: "session-title", text: s.title || "Untitled session" }));
+    top.appendChild(el("span", { class: "session-path", text: `${s.project}${s.branch ? " · " + s.branch : ""}` }));
+    for (const m of s.models) top.appendChild(el("span", { class: "chip", text: m }));
+    host.appendChild(top);
+
+    const grid = el("div", { class: "session-grid" });
+    const cells = [
+        ["Tokens", fmtTokens(s.tokens)],
+        ["Turns", fmtInt(s.turns)],
+        ["Written", fmtTokens(s.output)],
+        ["Cache read", fmtTokens(s.cache_read)],
+        ["Cache write", fmtTokens(s.cache_write)],
+        ["Duration", fmtDuration((new Date(s.end) - new Date(s.start)) / 1000)]
+    ];
+    if (snap.cost_enabled) cells.push(["API-equivalent", fmtUSD(s.cost)]);
+    for (const [label, value] of cells) {
+        grid.appendChild(el("div", {}, [el("span", { text: label }), el("b", { text: value })]));
+    }
+    host.appendChild(grid);
+}
+
+function renderDailyExtras(snap) {
+    const legend = document.getElementById("daily-legend");
+    legend.textContent = "";
+    const present = new Set();
+    for (const day of snap.daily) for (const key of Object.keys(day.by_model)) present.add(key);
+
+    const shown = snap.models.filter(m => m.mapped && present.has(m.model));
+    const others = [...present].filter(id => !(snap.models.find(m => m.model === id) || {}).mapped);
+    for (const m of shown) {
+        legend.appendChild(el("span", { class: "legend-item" }, [
+            el("span", { class: "swatch", style: `background:${m.color}` }),
+            el("span", { text: m.label })
+        ]));
+    }
+    if (others.length) {
+        legend.appendChild(el("span", { class: "legend-item" }, [
+            el("span", { class: "swatch", style: `background:${snap.other_color}` }),
+            el("span", { text: "Other (" + others.length + ")" })
+        ]));
+    }
+
+    const table = document.getElementById("daily-table");
+    table.textContent = "";
+    table.appendChild(el("thead", {}, [el("tr", {}, [
+        el("th", { text: "Day" }), el("th", { class: "num", text: "Tokens" }), el("th", { text: "Models" })
+    ])]));
+    const body = el("tbody");
+    for (const day of snap.daily.slice().reverse()) {
+        const names = Object.keys(day.by_model)
+            .map(id => (snap.models.find(m => m.model === id) || {}).label || id).join(", ");
+        body.appendChild(el("tr", {}, [
+            el("td", { text: fmtDay(day.date) }),
+            el("td", { class: "num", text: fmtInt(day.total) }),
+            el("td", { class: "muted", text: names })
+        ]));
+    }
+    table.appendChild(body);
+    const active = snap.daily.filter(d => d.total > 0).length;
+    document.getElementById("daily-note").textContent = snap.daily.length
+        ? `${active} active of ${snap.daily.length} days · transcript window`
+        : "no data in range";
+}
+
+function barCell(fraction) {
+    const track = el("div", { class: "bar-track" });
+    track.appendChild(el("div", { class: "bar-fill", style: `width:${Math.max(1.5, fraction * 100).toFixed(1)}%` }));
+    return el("td", { class: "bar-cell" }, [track]);
+}
+
+function renderModels(snap) {
+    const table = document.getElementById("models-table");
+    table.textContent = "";
+    const cost = snap.cost_enabled;
+    const head = ["Model", "Share", "Tokens", "Output", "Cache read", "Cache write", "Requests"];
+    if (cost) head.push("API-equivalent");
+    table.appendChild(el("thead", {}, [el("tr", {}, head.map((h, i) =>
+        el("th", { class: i >= 2 ? "num" : "", text: h })))]));
+
+    const body = el("tbody");
+    for (const m of snap.models) {
+        const row = el("tr");
+        row.appendChild(el("td", { class: "name" }, [
+            el("span", { class: "chip" }, [
+                el("span", { class: "swatch", style: `background:${m.color}` }),
+                el("span", { text: m.label })
+            ])
+        ]));
+        row.appendChild(barCell(m.share));
+        row.appendChild(el("td", { class: "num", text: fmtInt(m.tokens) }));
+        row.appendChild(el("td", { class: "num", text: fmtInt(m.output) }));
+        row.appendChild(el("td", { class: "num", text: fmtInt(m.cache_read) }));
+        row.appendChild(el("td", { class: "num", text: fmtInt(m.cache_write) }));
+        row.appendChild(el("td", { class: "num", text: m.requests ? fmtInt(m.requests) : "—" }));
+        if (cost) row.appendChild(el("td", { class: "num", text: fmtUSD(m.cost) }));
+        body.appendChild(row);
+    }
+    table.appendChild(body);
+    document.getElementById("models-note").textContent = snap.range === "all"
+        ? `lifetime · stats cache through ${snap.totals.lifetime_through} plus transcripts since`
+        : "transcript window";
+}
+
+function renderProjects(snap) {
+    const table = document.getElementById("projects-table");
+    table.textContent = "";
+    const cost = snap.cost_enabled;
+    const head = ["Project", "Share", "Tokens", "Sessions", "Requests"];
+    if (cost) head.push("API-equivalent");
+    table.appendChild(el("thead", {}, [el("tr", {}, head.map((h, i) =>
+        el("th", { class: i >= 2 ? "num" : "", text: h })))]));
+    const top = Math.max(...snap.projects.map(p => p.tokens), 1);
+    const body = el("tbody");
+    for (const p of snap.projects) {
+        const row = el("tr");
+        row.appendChild(el("td", { class: "name", text: p.project }));
+        row.appendChild(barCell(p.tokens / top));
+        row.appendChild(el("td", { class: "num", text: fmtInt(p.tokens) }));
+        row.appendChild(el("td", { class: "num", text: fmtInt(p.sessions) }));
+        row.appendChild(el("td", { class: "num", text: fmtInt(p.requests) }));
+        if (cost) row.appendChild(el("td", { class: "num", text: fmtUSD(p.cost) }));
+        body.appendChild(row);
+    }
+    table.appendChild(body);
+}
+
+function renderSessions(snap) {
+    const table = document.getElementById("sessions-table");
+    table.textContent = "";
+    const cost = snap.cost_enabled;
+    const head = ["Session", "Project", "Models", "Turns", "Tokens", "Duration", "Ended"];
+    if (cost) head.splice(5, 0, "API-equivalent");
+    table.appendChild(el("thead", {}, [el("tr", {}, head.map(h =>
+        el("th", { class: ["Turns", "Tokens", "API-equivalent"].includes(h) ? "num" : "", text: h })))]));
+
+    const body = el("tbody");
+    for (const s of snap.sessions) {
+        const row = el("tr");
+        row.appendChild(el("td", { class: "name", text: s.title || "Untitled" }));
+        row.appendChild(el("td", { class: "muted", text: s.project + (s.branch ? " · " + s.branch : "") }));
+        row.appendChild(el("td", { class: "muted", text: s.models.join(", ") }));
+        row.appendChild(el("td", { class: "num", text: fmtInt(s.turns) }));
+        row.appendChild(el("td", { class: "num", text: fmtInt(s.tokens) }));
+        if (cost) row.appendChild(el("td", { class: "num", text: fmtUSD(s.cost) }));
+        row.appendChild(el("td", { class: "muted", text: fmtDuration((new Date(s.end) - new Date(s.start)) / 1000) }));
+        row.appendChild(el("td", { class: "muted", text: fmtStamp(s.end) }));
+        body.appendChild(row);
+    }
+    table.appendChild(body);
+    document.getElementById("sessions-note").textContent = `${snap.sessions.length} most recent`;
+}
+
+/* --- shell --------------------------------------------------------------- */
+
+function renderFilters(snap) {
+    const host = document.getElementById("ranges");
+    if (!host.childElementCount) {
+        for (const [key, label] of RANGES) {
+            const button = el("button", { type: "button", text: label, "data-range": key });
+            button.addEventListener("click", () => { state.range = key; load(); });
+            host.appendChild(button);
+        }
+    }
+    for (const button of host.children) {
+        button.setAttribute("aria-pressed", String(button.dataset.range === state.range));
+    }
+
+    const select = document.getElementById("project");
+    const options = ["all", ...snap.project_options];
+    if (select.childElementCount !== options.length) {
+        select.textContent = "";
+        for (const value of options) {
+            select.appendChild(el("option", { value, text: value === "all" ? "All projects" : value }));
+        }
+    }
+    select.value = state.project;
+    document.getElementById("scope-note").textContent = "scopes everything below";
+}
+
+function tickCountdowns() {
+    const now = Date.now();
+    for (const node of document.querySelectorAll("[data-reset]")) {
+        const iso = node.dataset.reset;
+        if (!iso) { node.textContent = ""; continue; }
+        const left = (new Date(iso).getTime() - now) / 1000;
+        node.textContent = left > 0
+            ? `resets in ${fmtDuration(left)} · ${fmtClock(iso)}`
+            : "resetting…";
+    }
+    const snap = state.snap;
+    if (snap) {
+        const age = (Date.now() - new Date(snap.generated_at).getTime()) / 1000;
+        document.getElementById("updated").textContent = age < 5 ? "live" : `updated ${fmtDuration(age)} ago`;
+    }
+}
+
+function render(snap) {
+    state.snap = snap;
+    renderFilters(snap);
+    renderLimits(snap);
+    renderTiles(snap);
+    renderSession(snap);
+    renderDailyExtras(snap);
+    renderDaily(snap.daily, snap.models, snap.other_color);
+    renderHourly(snap.hourly);
+    document.getElementById("hourly-note").textContent =
+        fmtTokens(snap.windows.today.tokens) + " today · local time";
+    renderModels(snap);
+    renderProjects(snap);
+    renderSessions(snap);
+    document.getElementById("footnote").textContent =
+        `Token counts are read from ~/.claude/projects transcripts (from ${snap.totals.transcript_first_day}); `
+        + `earlier months come from Claude Code's own stats cache. Plan percentages come from your Claude account. `
+        + `API-equivalent cost is what this traffic would list at on the Claude API — a subscription bills none of it.`;
+    document.getElementById("live-dot").className = "dot live";
+    tickCountdowns();
+}
+
+async function load() {
+    if (state.fetching) { state.pending = true; return; }   // never drop the last update
+    state.fetching = true;
+    document.body.classList.add("loading");
+    try {
+        const url = `/api/snapshot?range=${encodeURIComponent(state.range)}&project=${encodeURIComponent(state.project)}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        render(await response.json());
+    } catch (err) {
+        document.getElementById("updated").textContent = "connection lost — retrying";
+        document.getElementById("live-dot").className = "dot";
+    } finally {
+        state.fetching = false;
+        document.body.classList.remove("loading");
+        if (state.pending) { state.pending = false; load(); }
+    }
+}
+
+document.getElementById("project").addEventListener("change", event => {
+    state.project = event.target.value;
+    load();
+});
+
+let resizeTimer;
+window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+        if (!state.snap) return;
+        renderDaily(state.snap.daily, state.snap.models, state.snap.other_color);
+        renderHourly(state.snap.hourly);
+    }, 120);
+});
+
+const stream = new EventSource("/api/stream");
+stream.addEventListener("update", () => load());
+stream.addEventListener("error", () => {
+    document.getElementById("live-dot").className = "dot";
+});
+
+setInterval(tickCountdowns, 1000);
+load();
+</script>
+</body>
+</html>

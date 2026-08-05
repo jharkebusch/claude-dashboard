@@ -1,0 +1,17 @@
+{
+  "host": "127.0.0.1",
+  "port": 7581,
+  "claude_dir": "/home/you/.claude",
+  "poll_seconds": 3,
+  "limits_refresh_seconds": 60,
+  "show_cost": true,
+  "default_range": "30d",
+
+  "_series_colors": "Fixed model -> colour map for the stacked daily chart. Any model not listed here is grouped into 'Other'. These four hexes are the one 4-colour subset of the palette that clears every colour-blindness and contrast gate on the dark surface at all pair distances — re-validate before changing them.",
+  "series_colors": {
+    "claude-opus-5": "#3987e5",
+    "claude-opus-4-8": "#c98500",
+    "claude-fable-5": "#d55181",
+    "claude-opus-4-7": "#008300"
+  }
+}
