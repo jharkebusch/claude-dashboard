@@ -16,6 +16,10 @@ services:
       CLAUDE_DIR: /claude
       DATA_DIR: /data
       DASHBOARD_HOST: 0.0.0.0
+      # Day and hour boundaries are computed in the container's timezone, and the
+      # base image is UTC. Without this the by-hour chart is drawn shifted from
+      # your wall clock and "today" starts at the wrong moment.
+      TZ: ${TZ:-Europe/Berlin}
     stop_grace_period: 5s
 
 volumes:

@@ -45,6 +45,11 @@ DASHBOARD_UID=$(id -u) DASHBOARD_GID=$(id -g) docker compose up -d
 
 The published port is bound to `127.0.0.1`, same as the host run.
 
+Every day and hour boundary on the page is computed in the **container's**
+timezone, and the base image is UTC — which would draw the by-hour chart shifted
+from your wall clock and start "today" at the wrong moment. `compose.yaml` sets
+`TZ` to `Europe/Berlin` for that reason; export `TZ` to override it.
+
 Both ways of running it use the same `config.json`; the container overrides only
 the paths and bind address through `CLAUDE_DIR`, `DATA_DIR`, `DASHBOARD_HOST` and
 `DASHBOARD_PORT`. Only one of them can hold port 7581 at a time.
