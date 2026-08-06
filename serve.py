@@ -221,6 +221,62 @@ def lifetime_models(meta):
     return combined
 
 
+def hourly_series(project, days, midnight):
+    """Today's hours, and the day you usually have, on one 24-hour axis.
+
+    The baseline is a mean over *active* days — days with any usage at all — so a
+    week away does not quietly flatten it toward zero. It is a mean over the whole
+    day count rather than per hour, which is what makes the hours you are normally
+    asleep read as quiet instead of being averaged away.
+
+    Two things are deliberately left out of it. Today, because at 10:00 it
+    contributes nothing to the evening hours and would drag the baseline below the
+    day it is being compared against. And partial days at the far end: the short
+    ranges are rolling timestamps, so bounding by one would cut the oldest day off
+    mid-morning and understate those hours. Every day counted here is a whole one.
+    """
+    scope = " AND project = ?" if project and project != "all" else ""
+    scope_args = [project] if project and project != "all" else []
+    hours = {h: {"hour": h, "tokens": 0, "requests": 0, "typical": 0, "typical_requests": 0.0}
+             for h in range(24)}
+
+    for r in query(
+        "SELECT CAST(strftime('%H', ts_epoch, 'unixepoch', 'localtime') AS INTEGER) AS hour,"
+        " SUM(input + output + cache_read + cache_w5m + cache_w1h) AS tokens,"
+        " COUNT(*) AS requests FROM requests"
+        f" WHERE ts_epoch >= ?{scope} GROUP BY hour",
+        [midnight.timestamp()] + scope_args,
+    ):
+        hours[r["hour"]]["tokens"] = r["tokens"] or 0
+        hours[r["hour"]]["requests"] = r["requests"] or 0
+
+    window = "date(ts_epoch, 'unixepoch', 'localtime') < ?"
+    window_args = [midnight.date().isoformat()]
+    if days is not None:
+        window += " AND date(ts_epoch, 'unixepoch', 'localtime') >= ?"
+        window_args.append((midnight.date() - timedelta(days=days)).isoformat())
+
+    rows = query(
+        "SELECT date(ts_epoch, 'unixepoch', 'localtime') AS day,"
+        " CAST(strftime('%H', ts_epoch, 'unixepoch', 'localtime') AS INTEGER) AS hour,"
+        " SUM(input + output + cache_read + cache_w5m + cache_w1h) AS tokens,"
+        " COUNT(*) AS requests FROM requests"
+        f" WHERE {window}{scope} GROUP BY day, hour",
+        window_args + scope_args,
+    )
+    active = {r["day"] for r in rows}
+    if active:
+        summed = {h: [0, 0] for h in range(24)}
+        for r in rows:
+            summed[r["hour"]][0] += r["tokens"] or 0
+            summed[r["hour"]][1] += r["requests"] or 0
+        for h, (tokens, requests) in summed.items():
+            hours[h]["typical"] = round(tokens / len(active))
+            hours[h]["typical_requests"] = round(requests / len(active), 1)
+
+    return {"hours": [hours[h] for h in range(24)], "days": len(active)}
+
+
 # --- snapshot --------------------------------------------------------------
 
 
@@ -377,24 +433,6 @@ def build_snapshot(range_key, project):
     for day in daily:
         day["total"] = sum(day["by_model"].values())
 
-    hourly_rows = query(
-        f"SELECT CAST(strftime('%H', ts_epoch, 'unixepoch', 'localtime') AS INTEGER) AS hour,"
-        f" SUM(input + output + cache_read + cache_w5m + cache_w1h) AS tokens,"
-        f" COUNT(*) AS requests FROM requests"
-        f" WHERE ts_epoch >= ? {'AND project = ?' if project and project != 'all' else ''}"
-        f" GROUP BY hour",
-        (midnight.timestamp(), project) if project and project != "all" else (midnight.timestamp(),),
-    )
-    by_hour = {r["hour"]: r for r in hourly_rows}
-    hourly = [
-        {
-            "hour": h,
-            "tokens": (by_hour[h]["tokens"] or 0) if h in by_hour else 0,
-            "requests": (by_hour[h]["requests"] or 0) if h in by_hour else 0,
-        }
-        for h in range(24)
-    ]
-
     project_cost = {}
     for r in query(
         f"SELECT project, model, {TOKEN_SUM} FROM requests WHERE {scope} GROUP BY project, model",
@@ -434,7 +472,7 @@ def build_snapshot(range_key, project):
         "windows": windows,
         "models": models,
         "daily": daily,
-        "hourly": hourly,
+        "hourly": hourly_series(project, days, midnight),
         "projects": projects,
         "sessions": recent_sessions(scope, params),
         "live_sessions": live_sessions(),

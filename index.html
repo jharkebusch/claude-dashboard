@@ -126,11 +126,13 @@ select:hover { color: var(--ink); }
     background: rgba(255, 255, 255, 0.06); border-radius: 20px; padding: 2px 9px;
 }
 .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.swatch.line { width: 12px; height: 2px; border-radius: 1px; }
 .chip.auto { font-size: 10px; padding: 1px 7px; margin-left: 8px; color: var(--muted); }
 
 /* --- charts ------------------------------------------------------------- */
 
 .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+.legend:empty { display: none; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
 .chart { width: 100%; display: block; }
 .chart text { font-size: 11px; fill: var(--muted); }
@@ -227,8 +229,9 @@ main { transition: opacity .15s ease; }
 
     <section>
         <div class="card">
-            <div class="section-head"><h2>Today by hour</h2><span class="note" id="hourly-note"></span></div>
-            <svg class="chart" id="hourly-chart" role="img" aria-label="Tokens per hour today"></svg>
+            <div class="section-head"><h2>By hour</h2><span class="note" id="hourly-note"></span></div>
+            <div class="legend" id="hourly-legend"></div>
+            <svg class="chart" id="hourly-chart" role="img" aria-label="Tokens per hour, today against a usual day"></svg>
         </div>
     </section>
 
@@ -456,18 +459,25 @@ function renderDaily(days, models, otherColor) {
     });
 }
 
-function renderHourly(hours) {
+// One complete day is a sample, not a habit — below two there is no usual to draw.
+const hasUsual = hourly => hourly.days >= 2;
+
+function renderHourly(hourly) {
     const svg = document.getElementById("hourly-chart");
     svg.textContent = "";
     const width = svg.clientWidth || svg.parentNode.clientWidth;
     if (!width) return;
+    const hours = hourly.hours;
+    const usual = hasUsual(hourly);
     const pad = { top: 18, right: 8, bottom: 26, left: 52 };
     const height = 160;
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
     svg.setAttribute("height", height);
 
     const peak = Math.max(...hours.map(h => h.tokens), 1);
-    const max = niceMax(peak);
+    // Both series share one scale, or the comparison the chart exists to make
+    // would be drawn as a lie.
+    const max = niceMax(Math.max(peak, usual ? Math.max(...hours.map(h => h.typical)) : 0));
     drawAxis(svg, width, height, max, pad);
 
     const plotW = width - pad.left - pad.right;
@@ -475,14 +485,15 @@ function renderHourly(hours) {
     const band = plotW / 24;
     const barW = Math.min(MAX_BAR, Math.max(4, band - GAP * 2));
     const accent = css("--accent");
+    const usualColor = css("--ink-2");
+    const centre = hour => pad.left + band * hour + band / 2;
 
     hours.forEach(h => {
-        const cx = pad.left + band * h.hour + band / 2;
-        const x = cx - barW / 2;
+        const cx = centre(h.hour);
         const barH = (h.tokens / max) * plotH;
         if (barH > 0) {
             svg.appendChild(svgEl("path", {
-                d: roundedTop(x, height - pad.bottom - barH, barW, barH, 4), fill: accent
+                d: roundedTop(cx - barW / 2, height - pad.bottom - barH, barW, barH, 4), fill: accent
             }));
         }
         if (h.hour % 3 === 0) {
@@ -497,18 +508,33 @@ function renderHourly(hours) {
             label.textContent = fmtTokens(h.tokens);
             svg.appendChild(label);
         }
+    });
 
+    if (usual) {
+        svg.appendChild(svgEl("polyline", {
+            points: hours.map(h =>
+                `${centre(h.hour)},${height - pad.bottom - (h.typical / max) * plotH}`).join(" "),
+            fill: "none", stroke: usualColor, "stroke-width": 2,
+            "stroke-linejoin": "round", "stroke-linecap": "round"
+        }));
+    }
+
+    // Hit regions last, so hovering works over the bars and the line alike.
+    hours.forEach(h => {
+        const clock = String(h.hour).padStart(2, "0") + ":00";
         const hit = svgEl("rect", {
             class: "hit", x: pad.left + band * h.hour, y: pad.top,
             width: band, height: plotH, tabindex: "0",
-            "aria-label": `${String(h.hour).padStart(2, "0")}:00 — ${fmtInt(h.tokens)} tokens`
+            "aria-label": usual
+                ? `${clock} — ${fmtInt(h.tokens)} tokens today, usually ${fmtInt(h.typical)}`
+                : `${clock} — ${fmtInt(h.tokens)} tokens`
         });
         const show = () => {
             hit.style.fill = "rgba(255,255,255,0.045)";
-            showTip(hit, String(h.hour).padStart(2, "0") + ":00", [
-                { label: "tokens", value: fmtTokens(h.tokens) },
-                { label: "requests", value: fmtInt(h.requests) }
-            ]);
+            const rows = [{ label: "today", value: fmtTokens(h.tokens), color: accent }];
+            if (usual) rows.push({ label: "usual", value: fmtTokens(h.typical), color: usualColor });
+            rows.push({ label: "requests", value: fmtInt(h.requests) });
+            showTip(hit, clock, rows);
         };
         const hide = () => { hit.style.fill = ""; hideTip(); };
         hit.addEventListener("pointerenter", show);
@@ -763,6 +789,30 @@ function renderDailyExtras(snap) {
         : "no data in range";
 }
 
+function renderHourlyExtras(snap) {
+    const hourly = snap.hourly;
+    const usual = hasUsual(hourly);
+    const legend = document.getElementById("hourly-legend");
+    legend.textContent = "";
+    if (usual) {
+        for (const [cls, color, label] of [
+            ["swatch", css("--accent"), "Today"],
+            ["swatch line", css("--ink-2"), "Usual"]
+        ]) {
+            legend.appendChild(el("span", { class: "legend-item" }, [
+                el("span", { class: cls, style: `background:${color}` }),
+                el("span", { text: label })
+            ]));
+        }
+    }
+
+    const today = fmtTokens(snap.windows.today.tokens) + " today";
+    const total = hourly.hours.reduce((sum, h) => sum + h.typical, 0);
+    document.getElementById("hourly-note").textContent = usual
+        ? `${today} · usually ${fmtTokens(total)} a day over ${hourly.days} days · local time`
+        : `${today} · usual needs two complete days · local time`;
+}
+
 function barCell(fraction) {
     const track = el("div", { class: "bar-track" });
     track.appendChild(el("div", { class: "bar-fill", style: `width:${Math.max(1.5, fraction * 100).toFixed(1)}%` }));
@@ -908,9 +958,8 @@ function render(snap) {
     renderLiveSessions(snap);
     renderDailyExtras(snap);
     renderDaily(snap.daily, snap.models, snap.other_color);
+    renderHourlyExtras(snap);
     renderHourly(snap.hourly);
-    document.getElementById("hourly-note").textContent =
-        fmtTokens(snap.windows.today.tokens) + " today · local time";
     renderModels(snap);
     renderProjects(snap);
     renderSessions(snap);

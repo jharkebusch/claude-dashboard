@@ -71,6 +71,21 @@ are still real spend, so they stay in every total and appear in the sessions
 table marked `auto`. The signal is the `entrypoint` each transcript records —
 `cli` for a session you type in, `sdk-py` for one a plugin started.
 
+**By hour** puts today's bars against the day you usually have, on one shared
+scale. The baseline is a mean over *active* days — days you used Claude at all —
+so a week away does not quietly flatten it toward zero, and it is a mean over the
+whole day count rather than per hour, which is what lets the hours you are
+normally asleep read as quiet instead of being averaged away. It follows the
+range and project filters like everything else.
+
+Two days are deliberately left out of it. **Today**, because at 10:00 it
+contributes nothing to the evening hours and would drag the baseline below the
+day it is being compared against. And **partial days at the far end**: the `24h`
+and `7d` ranges are rolling timestamps, so bounding the baseline by one would cut
+the oldest day off mid-morning and understate those hours — every day counted is
+a whole one. Under two complete days there is no habit to speak of, so the line
+is dropped and the note says so; at `24h` that is always the case.
+
 Three details worth knowing:
 
 - **One API response is written as several assistant records**, one per content
@@ -147,7 +162,19 @@ re-validate rather than picking by eye.
 | `limits.py` | Reads the account usage endpoint |
 | `serve.py` | Aggregation queries, JSON API, SSE, static page |
 | `index.html` | The whole front end |
+| `tests/` | Standard-library `unittest`, no dependencies |
 | `data/usage.db` | Derived cache. Safe to delete — a rebuild takes about a second. |
 
 Run `python3 ingest.py` on its own to rebuild the database without starting the
 server.
+
+## Tests
+
+```bash
+python3 -m unittest discover
+```
+
+Nothing is mocked: the tests build a real SQLite database in memory and hand it
+to the same query functions the server uses. They point `DATA_DIR` and
+`CLAUDE_DIR` at a temporary directory before importing `serve`, which opens its
+database at import time — your real `~/.claude` is never touched.
