@@ -65,6 +65,7 @@ the Docker daemon; by default it stays on-demand.
 | All-time totals | `~/.claude/stats-cache.json` (`modelUsage`) plus every transcript dated after its `lastComputedDate` |
 | Plan percentages and reset times | `GET /api/oauth/usage` on your Claude account — the same endpoint `/usage` uses |
 | API-equivalent cost | `pricing.json` × the token split, computed locally |
+| Workload by month | `~/.claude/stats-cache.json` (`dailyActivity`) — sessions, messages and tool calls per day |
 
 **Current sessions** lists every Claude Code window you have open — several
 commonly run at once, one per project — with a live dot for anything that wrote
@@ -90,6 +91,28 @@ and `7d` ranges are rolling timestamps, so bounding the baseline by one would cu
 the oldest day off mid-morning and understate those hours — every day counted is
 a whole one. Under two complete days there is no habit to speak of, so the line
 is dropped and the note says so; at `24h` that is always the case.
+
+**Tokens per day** carries the same usual-day level as a flat line, on the same
+rule — active days, today excluded — so each bar reads as above or below normal
+at a glance.
+
+**Workload by month** is the one card that is not about tokens, and it is
+measured in sessions and messages for a reason. The transcripts reach back about
+a month; only the stats cache goes back to your first session. Its per-day token
+figures (`dailyModelTokens`) count input and output alone, so a month there is
+tens of millions against the billions the rest of the page reports — the same
+unit trap described below. Its *activity* counts have no such problem, so that is
+what the months are drawn in.
+
+Those counts are never mixed with the transcripts either. Measured against
+transcript request counts on the same days, `messageCount` runs anywhere from
+0.5× to 14× — the two count different events. So the card stops where the cache
+stops: `lastComputedDate`, which trails the present by days, which is why the
+current month is usually absent and the note carries the cutoff. Months cut short
+at either end — the first, which starts at your first session, and the last,
+where the cache stopped — are drawn faint and marked `partial`, so a short bar is
+never read as a quiet month. The card ignores the range and project filters: the
+stats cache has no project dimension, and a 30-day range would empty it.
 
 Three details worth knowing:
 

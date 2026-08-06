@@ -137,6 +137,8 @@ select:hover { color: var(--ink); }
 .chart { width: 100%; display: block; }
 .chart text { font-size: 11px; fill: var(--muted); }
 .chart .hit { fill: transparent; cursor: pointer; outline: none; }
+/* Reference lines annotate the bars — they are never a hover target themselves. */
+.chart .ref-line { pointer-events: none; }
 .chart .hit:focus-visible { fill: rgba(255, 255, 255, 0.045); }
 .chart .peak-label { fill: var(--ink-2); font-weight: 600; }
 
@@ -232,6 +234,17 @@ main { transition: opacity .15s ease; }
             <div class="section-head"><h2>By hour</h2><span class="note" id="hourly-note"></span></div>
             <div class="legend" id="hourly-legend"></div>
             <svg class="chart" id="hourly-chart" role="img" aria-label="Tokens per hour, today against a usual day"></svg>
+        </div>
+    </section>
+
+    <section>
+        <div class="card">
+            <div class="section-head"><h2>Workload by month</h2><span class="note" id="monthly-note"></span></div>
+            <svg class="chart" id="monthly-chart" role="img" aria-label="Messages per month"></svg>
+            <details>
+                <summary>Data table</summary>
+                <div class="wrap"><table id="monthly-table"></table></div>
+            </details>
         </div>
     </section>
 
@@ -387,18 +400,19 @@ function drawAxis(svg, width, height, max, pad) {
     }
 }
 
-function renderDaily(days, models, otherColor) {
+function renderDaily(days, models, otherColor, usual) {
     const svg = document.getElementById("daily-chart");
     svg.textContent = "";
     const width = svg.clientWidth || svg.parentNode.clientWidth;
     if (!width || !days.length) return;
+    const showUsual = hasUsual(usual) && usual.tokens > 0;
     const pad = { top: 12, right: 8, bottom: 26, left: 52 };
     const height = CHART_H;
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
     svg.setAttribute("height", height);
 
     const order = models.filter(m => m.mapped).map(m => m.model);
-    const max = niceMax(Math.max(...days.map(d => d.total)));
+    const max = niceMax(Math.max(...days.map(d => d.total), showUsual ? usual.tokens : 0));
     drawAxis(svg, width, height, max, pad);
 
     const plotW = width - pad.left - pad.right;
@@ -457,6 +471,14 @@ function renderDaily(days, models, otherColor) {
         hit.addEventListener("blur", hide);
         svg.appendChild(hit);
     });
+
+    if (showUsual) {
+        const y = height - pad.bottom - (usual.tokens / max) * plotH;
+        svg.appendChild(svgEl("line", {
+            class: "ref-line", x1: pad.left, x2: width - pad.right, y1: y, y2: y,
+            stroke: css("--ink-2"), "stroke-width": 2, "stroke-linecap": "round"
+        }));
+    }
 }
 
 // One complete day is a sample, not a habit — below two there is no usual to draw.
@@ -512,6 +534,7 @@ function renderHourly(hourly) {
 
     if (usual) {
         svg.appendChild(svgEl("polyline", {
+            class: "ref-line",
             points: hours.map(h =>
                 `${centre(h.hour)},${height - pad.bottom - (h.typical / max) * plotH}`).join(" "),
             fill: "none", stroke: usualColor, "stroke-width": 2,
@@ -535,6 +558,73 @@ function renderHourly(hourly) {
             if (usual) rows.push({ label: "usual", value: fmtTokens(h.typical), color: usualColor });
             rows.push({ label: "requests", value: fmtInt(h.requests) });
             showTip(hit, clock, rows);
+        };
+        const hide = () => { hit.style.fill = ""; hideTip(); };
+        hit.addEventListener("pointerenter", show);
+        hit.addEventListener("focus", show);
+        hit.addEventListener("pointerleave", hide);
+        hit.addEventListener("blur", hide);
+        svg.appendChild(hit);
+    });
+}
+
+function fmtMonth(ym) {
+    return new Date(ym + "-01T00:00:00").toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+}
+
+function renderMonthly(monthly) {
+    const svg = document.getElementById("monthly-chart");
+    svg.textContent = "";
+    const months = monthly.months || [];
+    const width = svg.clientWidth || svg.parentNode.clientWidth;
+    if (!width || !months.length) return;
+    const pad = { top: 18, right: 8, bottom: 26, left: 52 };
+    const height = CHART_H;
+    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    svg.setAttribute("height", height);
+
+    const max = niceMax(Math.max(...months.map(m => m.messages), 1));
+    drawAxis(svg, width, height, max, pad);
+
+    const plotW = width - pad.left - pad.right;
+    const plotH = height - pad.top - pad.bottom;
+    const band = plotW / months.length;
+    const barW = Math.min(48, Math.max(6, band - 14));
+    const accent = css("--accent");
+
+    months.forEach((m, i) => {
+        const cx = pad.left + band * i + band / 2;
+        const barH = (m.messages / max) * plotH;
+        if (barH > 0) {
+            svg.appendChild(svgEl("path", {
+                d: roundedTop(cx - barW / 2, height - pad.bottom - barH, barW, barH, 4),
+                fill: accent,
+                // A month cut short by the cache is drawn faint, so a short bar
+                // never passes for a quiet month.
+                "fill-opacity": m.partial ? 0.45 : 1
+            }));
+        }
+        const label = svgEl("text", { x: cx, y: height - 8, "text-anchor": "middle" });
+        label.textContent = fmtMonth(m.month);
+        svg.appendChild(label);
+
+        const partly = m.partial ? " (partial)" : "";
+        const hit = svgEl("rect", {
+            class: "hit", x: pad.left + band * i, y: pad.top,
+            width: band, height: plotH, tabindex: "0",
+            "aria-label": `${fmtMonth(m.month)}${partly} — ${fmtInt(m.messages)} messages,`
+                + ` ${fmtInt(m.sessions)} sessions`
+        });
+        const show = () => {
+            hit.style.fill = "rgba(255,255,255,0.045)";
+            const rows = [
+                { label: "messages", value: fmtInt(m.messages), color: accent },
+                { label: "sessions", value: fmtInt(m.sessions) },
+                { label: "tool calls", value: fmtInt(m.tool_calls) },
+                { label: m.active_days === 1 ? "active day" : "active days", value: fmtInt(m.active_days) }
+            ];
+            if (m.partial) rows.push({ label: "— partial month", value: "" });
+            showTip(hit, fmtMonth(m.month), rows);
         };
         const hide = () => { hit.style.fill = ""; hideTip(); };
         hit.addEventListener("pointerenter", show);
@@ -766,6 +856,12 @@ function renderDailyExtras(snap) {
             el("span", { text: "Other (" + others.length + ")" })
         ]));
     }
+    if (hasUsual(snap.daily_usual) && snap.daily_usual.tokens > 0) {
+        legend.appendChild(el("span", { class: "legend-item" }, [
+            el("span", { class: "swatch line", style: `background:${css("--ink-2")}` }),
+            el("span", { text: "Usual" })
+        ]));
+    }
 
     const table = document.getElementById("daily-table");
     table.textContent = "";
@@ -784,9 +880,44 @@ function renderDailyExtras(snap) {
     }
     table.appendChild(body);
     const active = snap.daily.filter(d => d.total > 0).length;
+    const usual = hasUsual(snap.daily_usual) && snap.daily_usual.tokens > 0
+        ? `usual ${fmtTokens(snap.daily_usual.tokens)}/day · ` : "";
     document.getElementById("daily-note").textContent = snap.daily.length
-        ? `${active} active of ${snap.daily.length} days · transcript window`
+        ? `${usual}${active} active of ${snap.daily.length} days · transcript window`
         : "no data in range";
+}
+
+function renderMonthlyExtras(snap) {
+    const months = snap.monthly.months || [];
+    const through = snap.monthly.through;
+    document.getElementById("monthly-note").textContent = months.length
+        ? `${months.length} months · through ${through ? fmtDay(through) : "—"}`
+            + ` · all projects, every range`
+        : "no history in Claude Code's stats cache yet";
+
+    const table = document.getElementById("monthly-table");
+    table.textContent = "";
+    table.appendChild(el("thead", {}, [el("tr", {}, [
+        el("th", { text: "Month" }),
+        el("th", { class: "num", text: "Sessions" }),
+        el("th", { class: "num", text: "Messages" }),
+        el("th", { class: "num", text: "Tool calls" }),
+        el("th", { class: "num", text: "Active days" })
+    ])]));
+    const body = el("tbody");
+    for (const m of months.slice().reverse()) {
+        body.appendChild(el("tr", {}, [
+            el("td", {}, [
+                el("span", { text: fmtMonth(m.month) }),
+                ...(m.partial ? [el("span", { class: "chip auto", text: "partial" })] : [])
+            ]),
+            el("td", { class: "num", text: fmtInt(m.sessions) }),
+            el("td", { class: "num", text: fmtInt(m.messages) }),
+            el("td", { class: "num", text: fmtInt(m.tool_calls) }),
+            el("td", { class: "num muted", text: fmtInt(m.active_days) })
+        ]));
+    }
+    table.appendChild(body);
 }
 
 function renderHourlyExtras(snap) {
@@ -957,9 +1088,11 @@ function render(snap) {
     renderTiles(snap);
     renderLiveSessions(snap);
     renderDailyExtras(snap);
-    renderDaily(snap.daily, snap.models, snap.other_color);
+    renderDaily(snap.daily, snap.models, snap.other_color, snap.daily_usual);
     renderHourlyExtras(snap);
     renderHourly(snap.hourly);
+    renderMonthlyExtras(snap);
+    renderMonthly(snap.monthly);
     renderModels(snap);
     renderProjects(snap);
     renderSessions(snap);
@@ -1003,8 +1136,9 @@ window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
         if (!state.snap) return;
-        renderDaily(state.snap.daily, state.snap.models, state.snap.other_color);
+        renderDaily(state.snap.daily, state.snap.models, state.snap.other_color, state.snap.daily_usual);
         renderHourly(state.snap.hourly);
+        renderMonthly(state.snap.monthly);
     }, 120);
 });
 

@@ -8,8 +8,8 @@ from datetime import datetime, timedelta
 # serve.py opens its database at import time, so it has to be pointed somewhere
 # disposable before it is imported — never at the real ~/.claude.
 _TMP = tempfile.TemporaryDirectory()
-os.environ["DATA_DIR"] = _TMP.name
-os.environ["CLAUDE_DIR"] = _TMP.name
+os.environ.setdefault("DATA_DIR", _TMP.name)
+os.environ.setdefault("CLAUDE_DIR", _TMP.name)
 
 import ingest
 import serve

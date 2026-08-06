@@ -277,6 +277,64 @@ def hourly_series(project, days, midnight):
     return {"hours": [hours[h] for h in range(24)], "days": len(active)}
 
 
+def next_month(ym):
+    year, month = int(ym[:4]), int(ym[5:7])
+    return f"{year + 1:04d}-01" if month == 12 else f"{year:04d}-{month + 1:02d}"
+
+
+def monthly_series(meta):
+    """Workload by month, counted in sessions and messages rather than tokens.
+
+    Claude Code's own daily activity counts are the only source that reaches past
+    the transcript window — they start at the first session ever, where the
+    transcripts hold about a month. They are never added to anything from the
+    requests table: measured against transcript request counts on the same days,
+    the ratio swings from 0.5x to 14x, because the two count different events.
+    That is also why this card is activity and every other card is tokens.
+
+    Coverage is bounded at both ends, and a bar short for either reason would
+    otherwise read as a quiet month, so both are flagged: history begins at the
+    first session, and the cache stops at the last day it computed — which trails
+    the present by days, so the current month is usually missing entirely.
+    """
+    first = (meta.get("first_session_date") or "")[:10]
+    through = (meta.get("last_computed") or "")[:10]
+    rows = {
+        r["month"]: r
+        for r in query(
+            "SELECT substr(date, 1, 7) AS month, SUM(messages) AS messages,"
+            " SUM(sessions) AS sessions, SUM(tool_calls) AS tool_calls,"
+            " COUNT(*) AS active_days FROM daily_activity GROUP BY month"
+        )
+    }
+    if not rows:
+        return {"months": [], "through": through}
+
+    # The month the cache stopped in is only partial if it stopped before the
+    # month ended; the month history starts in, only if it started after the 1st.
+    end = parse_iso(through)
+    open_tail = through[:7] if end and (end + timedelta(days=1)).month == end.month else None
+    open_head = first[:7] if first and not first.endswith("-01") else None
+
+    months, cursor, stop = [], min(rows), max(rows)
+    while cursor <= stop:
+        r = rows.get(cursor)
+        months.append(
+            {
+                "month": cursor,
+                "messages": (r["messages"] or 0) if r else 0,
+                "sessions": (r["sessions"] or 0) if r else 0,
+                "tool_calls": (r["tool_calls"] or 0) if r else 0,
+                # Quiet months are filled in so a gap in the run of bars reads as
+                # a gap in the work, not as missing data.
+                "active_days": (r["active_days"] or 0) if r else 0,
+                "partial": cursor in (open_head, open_tail),
+            }
+        )
+        cursor = next_month(cursor)
+    return {"months": months, "through": through}
+
+
 # --- snapshot --------------------------------------------------------------
 
 
@@ -433,6 +491,14 @@ def build_snapshot(range_key, project):
     for day in daily:
         day["total"] = sum(day["by_model"].values())
 
+    # The usual day, on the same rule as the by-hour baseline: days you actually
+    # worked, and never today, which is still being written.
+    worked = [d for d in daily if d["date"] < midnight.date().isoformat() and d["total"] > 0]
+    daily_usual = {
+        "tokens": round(sum(d["total"] for d in worked) / len(worked)) if worked else 0,
+        "days": len(worked),
+    }
+
     project_cost = {}
     for r in query(
         f"SELECT project, model, {TOKEN_SUM} FROM requests WHERE {scope} GROUP BY project, model",
@@ -472,7 +538,9 @@ def build_snapshot(range_key, project):
         "windows": windows,
         "models": models,
         "daily": daily,
+        "daily_usual": daily_usual,
         "hourly": hourly_series(project, days, midnight),
+        "monthly": monthly_series(meta),
         "projects": projects,
         "sessions": recent_sessions(scope, params),
         "live_sessions": live_sessions(),

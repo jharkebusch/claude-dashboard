@@ -67,6 +67,18 @@ CREATE TABLE IF NOT EXISTS lifetime (
     cache_write INTEGER NOT NULL DEFAULT 0
 );
 
+-- Per-day activity counts from stats-cache.json, and the only source that
+-- reaches back past the transcript window — it starts at the first session ever,
+-- where the transcripts hold about a month. Deliberately never mixed with the
+-- requests table: these count different events, and measured against transcript
+-- request counts on the same days the ratio swings from 0.5x to 14x.
+CREATE TABLE IF NOT EXISTS daily_activity (
+    date       TEXT PRIMARY KEY,
+    messages   INTEGER NOT NULL DEFAULT 0,
+    sessions   INTEGER NOT NULL DEFAULT 0,
+    tool_calls INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
@@ -267,6 +279,19 @@ def import_lifetime(db, claude_dir):
             ("total_messages", str(data.get("totalMessages") or 0)),
         ],
     )
+
+    # The cache is authoritative for these, so it is replaced wholesale rather
+    # than merged — it recomputes days that were already written.
+    activity = [
+        (day["date"], day.get("messageCount") or 0, day.get("sessionCount") or 0,
+         day.get("toolCallCount") or 0)
+        for day in (data.get("dailyActivity") or [])
+        if day.get("date")
+    ]
+    db.execute("DELETE FROM daily_activity")
+    if activity:
+        db.executemany("INSERT INTO daily_activity VALUES (?,?,?,?)", activity)
+
     db.commit()
     return len(rows)
 
