@@ -284,6 +284,9 @@ const tip = document.getElementById("tip");
 
 const fmtInt = n => (n || 0).toLocaleString("en-US");
 
+// Rough heuristic: ~4 chars/token, ~40 chars/line of code.
+const TOKENS_PER_LINE = 10;
+
 function fmtTokens(n) {
     n = n || 0;
     if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 1 : 2) + "B";
@@ -755,8 +758,11 @@ function renderTiles(snap) {
     hero.classList.add("hero");
     host.appendChild(hero);
 
-    host.appendChild(tile(`Tokens · ${rangeLabel}`, fmtTokens(r.tokens),
-        `${fmtInt(r.output)} written · ${fmtInt(r.input)} fresh input`));
+    const rangeTile = tile(`Tokens · ${rangeLabel}`, fmtTokens(r.tokens),
+        `${fmtInt(r.output)} written · ${fmtInt(r.input)} fresh input`);
+    const estLines = Math.round((r.output || 0) / TOKENS_PER_LINE);
+    rangeTile.appendChild(el("div", { class: "tile-sub", text: `~${fmtInt(estLines)} lines of code written (est.)` }));
+    host.appendChild(rangeTile);
     if (snap.cost_enabled) {
         host.appendChild(tile(`API-equivalent · ${rangeLabel}`, fmtUSD(r.cost),
             `${fmtUSD(t.cost)} all time · your plan bills none of it`));
