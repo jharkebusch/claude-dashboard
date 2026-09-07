@@ -8,6 +8,10 @@
   "show_cost": true,
   "default_range": "30d",
 
+  "_machines": "Several machines can feed one dashboard: each syncs its ~/.claude into a directory named after it under claude_dir, and that directory name labels its rows. local_host names this machine's own rows when claude_dir is a single ~/.claude instead; empty means the system hostname. limits_host pins which machine's credentials file the plan-limits call reads; empty means the most recently written one, which is the one least likely to have expired.",
+  "local_host": "",
+  "limits_host": "",
+
   "_series_colors": "Fixed model -> colour map for the stacked daily chart. Any model not listed here is grouped into 'Other'. These four hexes are the one 4-colour subset of the palette that clears every colour-blindness and contrast gate on the dark surface at all pair distances — re-validate before changing them.",
   "series_colors": {
     "claude-opus-5": "#3987e5",

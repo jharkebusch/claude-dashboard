@@ -1,0 +1,9 @@
+[Unit]
+Description=Push Claude Code usage data to the dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/claude-dashboard-sync.env
+ExecStart=%h/.local/bin/claude-dashboard-sync

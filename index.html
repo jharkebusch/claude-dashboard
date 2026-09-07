@@ -202,6 +202,7 @@ main { transition: opacity .15s ease; }
     <div class="filters">
         <div class="segmented" id="ranges" role="group" aria-label="Time range"></div>
         <select id="project" aria-label="Project"></select>
+        <select id="host" aria-label="Machine" hidden></select>
         <span class="note" id="scope-note"></span>
     </div>
 
@@ -262,6 +263,13 @@ main { transition: opacity .15s ease; }
         </div>
     </section>
 
+    <section id="hosts-section" hidden>
+        <div class="card">
+            <div class="section-head"><h2>By machine</h2><span class="note">Transcript window only</span></div>
+            <div class="wrap"><table id="hosts-table"></table></div>
+        </div>
+    </section>
+
     <section>
         <div class="card">
             <div class="section-head"><h2>Recent sessions</h2><span class="note" id="sessions-note"></span></div>
@@ -277,8 +285,13 @@ main { transition: opacity .15s ease; }
 "use strict";
 
 const RANGES = [["24h", "24h"], ["7d", "7 days"], ["30d", "30 days"], ["90d", "90 days"], ["all", "All time"]];
-const state = { range: "30d", project: "all", snap: null, fetching: false };
+const state = { range: "30d", project: "all", host: "all", snap: null, fetching: false };
 const tip = document.getElementById("tip");
+
+// How many machines feed this dashboard. One is the ordinary case, and the
+// machine filter, the by-machine card and the machine labels all stay out of
+// the way until there is a second.
+const machineCount = snap => (snap.host_options || []).length;
 
 /* --- formatting ---------------------------------------------------------- */
 
@@ -775,11 +788,12 @@ function renderTiles(snap) {
             : `${fmtInt(r.sessions)} sessions · ${fmtTokens(r.sidechain_tokens)} in subagents`));
 }
 
-function sessionCard(s, showCost) {
+function sessionCard(s, showCost, showHost) {
     const card = el("div", { class: "card" });
     const top = el("div", { class: "session-top" });
     top.appendChild(el("span", { class: "dot" + (s.active ? " live" : "") }));
     top.appendChild(el("span", { class: "session-title", text: s.title || "Untitled session" }));
+    if (showHost && s.host) top.appendChild(el("span", { class: "chip", text: s.host }));
     top.appendChild(el("span", { class: "session-path", text: `${s.path || s.project}${s.branch ? " · " + s.branch : ""}` }));
     for (const m of s.models) top.appendChild(el("span", { class: "chip", text: m }));
     if (!s.active) {
@@ -839,7 +853,8 @@ function renderLiveSessions(snap) {
     }
     age.textContent = summary;
 
-    for (const s of list) host.appendChild(sessionCard(s, snap.cost_enabled));
+    const multi = machineCount(snap) > 1;
+    for (const s of list) host.appendChild(sessionCard(s, snap.cost_enabled, multi));
 }
 
 function renderDailyExtras(snap) {
@@ -1012,12 +1027,45 @@ function renderProjects(snap) {
     table.appendChild(body);
 }
 
+function renderHosts(snap) {
+    // One machine is the ordinary case, and its row would only repeat the
+    // totals — the card earns its place once there is more than one.
+    const section = document.getElementById("hosts-section");
+    section.hidden = machineCount(snap) < 2;
+    if (section.hidden) return;
+
+    const table = document.getElementById("hosts-table");
+    table.textContent = "";
+    const cost = snap.cost_enabled;
+    const head = ["Machine", "Share", "Tokens", "Sessions", "Requests"];
+    if (cost) head.push("API-equivalent");
+    table.appendChild(el("thead", {}, [el("tr", {}, head.map((h, i) =>
+        el("th", { class: i >= 2 ? "num" : "", text: h })))]));
+    const top = Math.max(...snap.hosts.map(m => m.tokens), 1);
+    const body = el("tbody");
+    for (const m of snap.hosts) {
+        const row = el("tr");
+        row.appendChild(el("td", { class: "name", text: m.host }));
+        row.appendChild(barCell(m.tokens / top));
+        row.appendChild(el("td", { class: "num", text: fmtInt(m.tokens) }));
+        row.appendChild(el("td", { class: "num", text: fmtInt(m.sessions) }));
+        row.appendChild(el("td", { class: "num", text: fmtInt(m.requests) }));
+        if (cost) row.appendChild(el("td", { class: "num", text: fmtUSD(m.cost) }));
+        body.appendChild(row);
+    }
+    table.appendChild(body);
+}
+
 function renderSessions(snap) {
     const table = document.getElementById("sessions-table");
     table.textContent = "";
     const cost = snap.cost_enabled;
-    const head = ["Session", "Project", "Models", "Turns", "Tokens", "Duration", "Ended"];
-    if (cost) head.splice(5, 0, "API-equivalent");
+    const multi = machineCount(snap) > 1;
+    const head = ["Session", "Project"];
+    if (multi) head.push("Machine");
+    head.push("Models", "Turns", "Tokens");
+    if (cost) head.push("API-equivalent");
+    head.push("Duration", "Ended");
     table.appendChild(el("thead", {}, [el("tr", {}, head.map(h =>
         el("th", { class: ["Turns", "Tokens", "API-equivalent"].includes(h) ? "num" : "", text: h })))]));
 
@@ -1030,6 +1078,7 @@ function renderSessions(snap) {
         const where = el("td", { class: "muted", text: s.project + (s.branch ? " · " + s.branch : "") });
         if (s.path) where.title = s.path;
         row.appendChild(where);
+        if (multi) row.appendChild(el("td", { class: "muted", text: s.host }));
         row.appendChild(el("td", { class: "muted", text: s.models.join(", ") }));
         row.appendChild(el("td", { class: "num", text: fmtInt(s.turns) }));
         row.appendChild(el("td", { class: "num", text: fmtInt(s.tokens) }));
@@ -1044,6 +1093,19 @@ function renderSessions(snap) {
 
 /* --- shell --------------------------------------------------------------- */
 
+function fillSelect(id, values, selected, allLabel) {
+    const select = document.getElementById(id);
+    const options = ["all", ...(values || [])];
+    if (select.childElementCount !== options.length) {
+        select.textContent = "";
+        for (const value of options) {
+            select.appendChild(el("option", { value, text: value === "all" ? allLabel : value }));
+        }
+    }
+    select.value = selected;
+    return select;
+}
+
 function renderFilters(snap) {
     const host = document.getElementById("ranges");
     if (!host.childElementCount) {
@@ -1057,15 +1119,10 @@ function renderFilters(snap) {
         button.setAttribute("aria-pressed", String(button.dataset.range === state.range));
     }
 
-    const select = document.getElementById("project");
-    const options = ["all", ...snap.project_options];
-    if (select.childElementCount !== options.length) {
-        select.textContent = "";
-        for (const value of options) {
-            select.appendChild(el("option", { value, text: value === "all" ? "All projects" : value }));
-        }
-    }
-    select.value = state.project;
+    fillSelect("project", snap.project_options, state.project, "All projects");
+    // The machine filter only appears once there is something to filter between.
+    fillSelect("host", snap.host_options, state.host, "All machines").hidden =
+        machineCount(snap) < 2;
     document.getElementById("scope-note").textContent = "scopes everything below";
 }
 
@@ -1101,10 +1158,14 @@ function render(snap) {
     renderMonthly(snap.monthly);
     renderModels(snap);
     renderProjects(snap);
+    renderHosts(snap);
     renderSessions(snap);
+    const machines = machineCount(snap);
     document.getElementById("footnote").textContent =
         `Token counts are read from ~/.claude/projects transcripts (from ${snap.totals.transcript_first_day}); `
-        + `earlier months come from Claude Code's own stats cache. Plan percentages come from your Claude account. `
+        + `earlier months come from Claude Code's own stats cache. `
+        + (machines > 1 ? `Merged from ${machines} machines. ` : "")
+        + `Plan percentages come from your Claude account. `
         + `API-equivalent cost is what this traffic would list at on the Claude API — a subscription bills none of it.`;
     document.getElementById("live-dot").className = "dot live";
     tickCountdowns();
@@ -1118,7 +1179,8 @@ async function load(background) {
     // on each one looks like the page reloading itself.
     if (!background) document.body.classList.add("loading");
     try {
-        const url = `/api/snapshot?range=${encodeURIComponent(state.range)}&project=${encodeURIComponent(state.project)}`;
+        const url = `/api/snapshot?range=${encodeURIComponent(state.range)}`
+            + `&project=${encodeURIComponent(state.project)}&host=${encodeURIComponent(state.host)}`;
         const response = await fetch(url);
         if (!response.ok) throw new Error("HTTP " + response.status);
         render(await response.json());
@@ -1134,6 +1196,11 @@ async function load(background) {
 
 document.getElementById("project").addEventListener("change", event => {
     state.project = event.target.value;
+    load();
+});
+
+document.getElementById("host").addEventListener("change", event => {
+    state.host = event.target.value;
     load();
 });
 

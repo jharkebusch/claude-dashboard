@@ -29,9 +29,10 @@ class MonthlySeriesTest(unittest.TestCase):
     def tearDown(self):
         serve.DB.close()
 
-    def activity(self, date, messages=100, sessions=5, tool_calls=20):
+    def activity(self, date, messages=100, sessions=5, tool_calls=20, host="fedora"):
         serve.DB.execute(
-            "INSERT INTO daily_activity VALUES (?,?,?,?)", (date, messages, sessions, tool_calls)
+            "INSERT INTO daily_activity VALUES (?,?,?,?,?)",
+            (host, date, messages, sessions, tool_calls),
         )
 
     def series(self, first="2026-02-01", through="2026-04-30"):
@@ -106,7 +107,7 @@ class DailyUsualTest(unittest.TestCase):
         )
 
     def usual(self):
-        return serve.build_snapshot("30d", "all")["daily_usual"]
+        return serve.build_snapshot("30d", "all", "all")["daily_usual"]
 
     def test_the_mean_is_taken_over_days_that_were_worked(self):
         self.add(local(1, 9), 1000)

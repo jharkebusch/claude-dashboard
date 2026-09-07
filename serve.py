@@ -29,6 +29,15 @@ PRICING = json.loads((BASE / "pricing.json").read_text())
 CONFIG["claude_dir"] = os.path.expanduser(
     os.environ.get("CLAUDE_DIR", CONFIG["claude_dir"])
 )
+# The name this machine's own rows are recorded under. It only applies when
+# `claude_dir` is a single ~/.claude; when several machines sync into it, each
+# one's directory name is its name.
+CONFIG["local_host"] = (
+    os.environ.get("DASHBOARD_LOCAL_HOST")
+    or CONFIG.get("local_host")
+    or ingest.local_hostname()
+)
+CONFIG["limits_host"] = os.environ.get("DASHBOARD_LIMITS_HOST", CONFIG.get("limits_host", ""))
 CONFIG["host"] = os.environ.get("DASHBOARD_HOST", CONFIG["host"])
 CONFIG["port"] = int(os.environ.get("DASHBOARD_PORT", CONFIG["port"]))
 DATA = Path(os.environ.get("DATA_DIR", str(BASE / "data")))
@@ -43,7 +52,6 @@ MANUAL_COOLDOWN = 15            # shortest gap between manual refreshes
 LIVE_WINDOW = 300               # wrote this recently -> shown as running
 OPEN_WINDOW = 900               # wrote this recently -> still listed, marked idle
 HOME_PREFIX = re.compile(r"^(/home/[^/]+|/Users/[^/]+|/root)(?=/|$)")
-CREDENTIALS = str(Path(CONFIG["claude_dir"]) / ".credentials.json")
 
 _db_lock = threading.Lock()
 _state_lock = threading.Lock()
@@ -59,7 +67,7 @@ _state = {
 }
 
 DATA.mkdir(parents=True, exist_ok=True)
-DB = ingest.connect(str(DATA / "usage.db"))
+DB = ingest.connect(str(DATA / "usage.db"), CONFIG["local_host"])
 
 
 def _restore_limits():
@@ -138,6 +146,22 @@ def model_label(model):
     return f"{family} {version}".strip()
 
 
+def filter_clauses(project, host):
+    """The project and machine filters, as SQL fragments and their parameters.
+
+    Shared so the by-hour baseline is drawn over exactly the rows the rest of the
+    page is counting.
+    """
+    clauses, params = [], []
+    if project and project != "all":
+        clauses.append("project = ?")
+        params.append(project)
+    if host and host != "all":
+        clauses.append("host = ?")
+        params.append(host)
+    return clauses, params
+
+
 def window_totals(start_epoch, end_epoch=None):
     clause = "ts_epoch >= ?"
     params = [start_epoch]
@@ -191,37 +215,71 @@ def build_model_list(totals_by_model):
     return sorted(rows, key=lambda r: r["tokens"], reverse=True)
 
 
-def lifetime_models(meta):
-    """Stats-cache totals through its last computed day, plus every transcript
-    request dated after it."""
-    combined = {
-        r["model"]: {
-            "input": r["input"],
-            "output": r["output"],
-            "cache_read": r["cache_read"],
-            "cache_write": r["cache_write"],
-            "requests": 0,
-        }
-        for r in query("SELECT * FROM lifetime")
+def host_scalars():
+    """The stats-cache scalars of every machine, keyed by machine."""
+    per_host = {}
+    for r in query("SELECT host, key, value FROM host_meta"):
+        per_host.setdefault(r["host"], {})[r["key"]] = r["value"]
+    return per_host
+
+
+def merged_meta(per_host):
+    """Fold the per-machine scalars into the single figure each card shows.
+
+    Sessions and messages sum. The coverage bounds do not: history begins at the
+    earliest first session, and the merged picture is only complete through the
+    *earliest* last-computed day, because a machine whose cache stopped sooner
+    contributes nothing to the months after it.
+    """
+    firsts = [v["first_session_date"] for v in per_host.values() if v.get("first_session_date")]
+    through = [v["last_computed"] for v in per_host.values() if v.get("last_computed")]
+    return {
+        "first_session_date": min(firsts) if firsts else "",
+        "last_computed": min(through) if through else "",
+        "total_sessions": sum(int(v.get("total_sessions") or 0) for v in per_host.values()),
+        "total_messages": sum(int(v.get("total_messages") or 0) for v in per_host.values()),
     }
-    for r in query(
-        f"SELECT model, {TOKEN_SUM} FROM requests"
-        " WHERE date(ts_epoch, 'unixepoch', 'localtime') > ? GROUP BY model",
-        (meta.get("last_computed") or "1970-01-01",),
-    ):
-        slot = combined.setdefault(
-            r["model"],
-            {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "requests": 0},
+
+
+def lifetime_models(per_host):
+    """Each machine's stats-cache totals through its own last computed day, plus
+    every transcript request that machine recorded after it.
+
+    The cutoff has to be applied per machine. The caches stop on different days,
+    and one machine's cutoff used against another's transcripts would either
+    count the overlap twice or drop the gap entirely.
+    """
+    combined = {}
+
+    def slot(model):
+        return combined.setdefault(
+            model, {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "requests": 0}
         )
-        slot["input"] += r["input"] or 0
-        slot["output"] += r["output"] or 0
-        slot["cache_read"] += r["cache_read"] or 0
-        slot["cache_write"] += (r["w5m"] or 0) + (r["w1h"] or 0)
-        slot["requests"] += r["requests"] or 0
+
+    for r in query("SELECT * FROM lifetime"):
+        entry = slot(r["model"])
+        entry["input"] += r["input"]
+        entry["output"] += r["output"]
+        entry["cache_read"] += r["cache_read"]
+        entry["cache_write"] += r["cache_write"]
+
+    for host in [r["host"] for r in query("SELECT DISTINCT host FROM requests")]:
+        cutoff = (per_host.get(host) or {}).get("last_computed") or "1970-01-01"
+        for r in query(
+            f"SELECT model, {TOKEN_SUM} FROM requests WHERE host = ?"
+            " AND date(ts_epoch, 'unixepoch', 'localtime') > ? GROUP BY model",
+            (host, cutoff),
+        ):
+            entry = slot(r["model"])
+            entry["input"] += r["input"] or 0
+            entry["output"] += r["output"] or 0
+            entry["cache_read"] += r["cache_read"] or 0
+            entry["cache_write"] += (r["w5m"] or 0) + (r["w1h"] or 0)
+            entry["requests"] += r["requests"] or 0
     return combined
 
 
-def hourly_series(project, days, midnight):
+def hourly_series(project, host, days, midnight):
     """Today's hours, and the day you usually have, on one 24-hour axis.
 
     The baseline is a mean over *active* days — days with any usage at all — so a
@@ -235,8 +293,8 @@ def hourly_series(project, days, midnight):
     ranges are rolling timestamps, so bounding by one would cut the oldest day off
     mid-morning and understate those hours. Every day counted here is a whole one.
     """
-    scope = " AND project = ?" if project and project != "all" else ""
-    scope_args = [project] if project and project != "all" else []
+    clauses, scope_args = filter_clauses(project, host)
+    scope = "".join(f" AND {c}" for c in clauses)
     hours = {h: {"hour": h, "tokens": 0, "requests": 0, "typical": 0, "typical_requests": 0.0}
              for h in range(24)}
 
@@ -295,7 +353,10 @@ def monthly_series(meta):
     Coverage is bounded at both ends, and a bar short for either reason would
     otherwise read as a quiet month, so both are flagged: history begins at the
     first session, and the cache stops at the last day it computed — which trails
-    the present by days, so the current month is usually missing entirely.
+    the present by days, so the current month is usually missing entirely. With
+    several machines merged, the stop is the earliest of their caches: past that
+    day a bar is missing whatever the machines that stopped first would have
+    added.
     """
     first = (meta.get("first_session_date") or "")[:10]
     through = (meta.get("last_computed") or "")[:10]
@@ -338,7 +399,7 @@ def monthly_series(meta):
 # --- snapshot --------------------------------------------------------------
 
 
-def build_snapshot(range_key, project):
+def build_snapshot(range_key, project, host):
     now = datetime.now(timezone.utc)
     with _state_lock:
         limits = dict(_state["limits"])
@@ -348,14 +409,14 @@ def build_snapshot(range_key, project):
     days = RANGES.get(range_key, 30)
     range_start = None if days is None else (now - timedelta(days=days)).timestamp()
 
+    filters, filter_params = filter_clauses(project, host)
     where = ["1=1"]
     params = []
     if range_start is not None:
         where.append("ts_epoch >= ?")
         params.append(range_start)
-    if project and project != "all":
-        where.append("project = ?")
-        params.append(project)
+    where.extend(filters)
+    params.extend(filter_params)
     scope = " AND ".join(where)
 
     # Per-model totals for the selected range.
@@ -403,8 +464,9 @@ def build_snapshot(range_key, project):
 
     # Lifetime figures come from the stats cache plus the transcripts that
     # postdate it; the transcript window alone is barely a month.
-    meta = {r["key"]: r["value"] for r in query("SELECT key, value FROM meta")}
-    lifetime = lifetime_models(meta)
+    per_host = host_scalars()
+    meta = merged_meta(per_host)
+    lifetime = lifetime_models(per_host)
     lifetime_list = build_model_list(lifetime)
     transcript_first = query("SELECT MIN(ts_epoch) AS e FROM requests")[0]["e"]
     totals = {
@@ -423,7 +485,7 @@ def build_snapshot(range_key, project):
 
     # "All" reports the lifetime picture; the shorter ranges are transcript-only,
     # where every request is individually accounted for.
-    if range_key == "all" and (not project or project == "all"):
+    if range_key == "all" and not filters:
         models = lifetime_list
         range_stats.update(
             {
@@ -520,6 +582,27 @@ def build_snapshot(range_key, project):
         )
     ]
 
+    host_cost = {}
+    for r in query(
+        f"SELECT host, model, {TOKEN_SUM} FROM requests WHERE {scope} GROUP BY host, model",
+        params,
+    ):
+        host_cost[r["host"]] = host_cost.get(r["host"], 0) + row_cost(r)
+    hosts = [
+        {
+            "host": r["host"],
+            "tokens": r["tokens"] or 0,
+            "requests": r["requests"] or 0,
+            "sessions": r["sessions"] or 0,
+            "cost": host_cost.get(r["host"], 0.0),
+        }
+        for r in query(
+            f"SELECT host, COUNT(DISTINCT session_id) AS sessions, {TOKEN_SUM}"
+            f" FROM requests WHERE {scope} GROUP BY host ORDER BY tokens DESC",
+            params,
+        )
+    ]
+
     return {
         "version": version,
         "generated_at": now.isoformat(),
@@ -532,6 +615,14 @@ def build_snapshot(range_key, project):
                 " FROM requests WHERE project != '' GROUP BY project ORDER BY t DESC"
             )
         ],
+        "host": host or "all",
+        "host_options": [
+            r["host"]
+            for r in query(
+                "SELECT host, SUM(input + output + cache_read + cache_w5m + cache_w1h) AS t"
+                " FROM requests WHERE host != '' GROUP BY host ORDER BY t DESC"
+            )
+        ],
         "limits": limits,
         "totals": totals,
         "range_stats": range_stats,
@@ -539,9 +630,10 @@ def build_snapshot(range_key, project):
         "models": models,
         "daily": daily,
         "daily_usual": daily_usual,
-        "hourly": hourly_series(project, days, midnight),
+        "hourly": hourly_series(project, host, days, midnight),
         "monthly": monthly_series(meta),
         "projects": projects,
+        "hosts": hosts,
         "sessions": recent_sessions(scope, params),
         "live_sessions": live_sessions(),
         "automated_recent": automated_recent(),
@@ -572,6 +664,7 @@ def _session_rows(sql, params):
         {
             "id": r["session_id"],
             "title": r["title"] or "",
+            "host": r["host"] or "",
             "project": r["project"] or "",
             # The project label is only the last path segment, so a session run
             # in a subdirectory reads as "release" rather than the repo it is in.
@@ -592,7 +685,7 @@ def _session_rows(sql, params):
 
 SESSION_SELECT = (
     "SELECT r.session_id AS session_id, MIN(ts_epoch) AS start, MAX(ts_epoch) AS end,"
-    " MAX(project) AS project, MAX(cwd) AS cwd, MAX(branch) AS branch,"
+    " MAX(r.host) AS host, MAX(project) AS project, MAX(cwd) AS cwd, MAX(branch) AS branch,"
     " GROUP_CONCAT(DISTINCT model) AS models, t.title AS title,"
     " MAX(s.entrypoint) AS entrypoint,"
     f" {TOKEN_SUM}"
@@ -683,6 +776,36 @@ def base_limits_interval():
     return max(LIMITS_MIN_INTERVAL, int(CONFIG.get("limits_refresh_seconds", 300)))
 
 
+def _mtime(path):
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return -1
+
+
+def credentials_path():
+    """The .credentials.json to read the account token from.
+
+    One account across every machine, so any machine's token answers for all of
+    them. Claude Code rotates the token in place, and each machine syncs its own
+    copy, so the most recently written file is the one least likely to have
+    expired — a machine idle for a week carries a token that no longer works.
+    Set `limits_host` to pin a specific machine instead. Resolved per call, not
+    once at startup, so a fresher token is picked up without a restart.
+    """
+    directories = dict(ingest.host_dirs(CONFIG["claude_dir"], CONFIG["local_host"]))
+    pinned = CONFIG.get("limits_host")
+    if pinned and pinned in directories:
+        return str(directories[pinned] / ".credentials.json")
+
+    found = [d / ".credentials.json" for d in directories.values()]
+    found = [path for path in found if path.is_file()]
+    if not found:
+        # Nothing to read; name a plausible path so the error says where it looked.
+        return str(Path(CONFIG["claude_dir"]) / ".credentials.json")
+    return str(max(found, key=_mtime))
+
+
 def refresh_limits(manual=False):
     """Call the account endpoint, fold the result into state, reschedule.
 
@@ -698,7 +821,7 @@ def refresh_limits(manual=False):
                 return {"ok": False, "cooldown": max(1, round(MANUAL_COOLDOWN - waited))}
             _state["last_limits_attempt"] = time.time()
 
-        result = limits_api.fetch(CREDENTIALS)
+        result = limits_api.fetch(credentials_path())
         persist = None
         with _state_lock:
             previous = _state["limits"]
@@ -747,6 +870,20 @@ def refresh_limits(manual=False):
         return result
 
 
+def stats_signature(local_host):
+    """The mtime of every machine's stats-cache.json.
+
+    Claude Code rewrites the cache as it recomputes, and a synced-in machine's
+    copy lands whenever its sync runs. The server outlives both by weeks, so the
+    file is watched rather than read once at startup — otherwise the lifetime
+    and by-month cards freeze on whatever had arrived when the process started.
+    """
+    return tuple(
+        (host, _mtime(directory / "stats-cache.json"))
+        for host, directory in ingest.host_dirs(CONFIG["claude_dir"], local_host)
+    )
+
+
 def refresher():
     """Watch the transcripts continuously; poll the account endpoint sparingly.
 
@@ -758,16 +895,26 @@ def refresher():
     poll = max(1, int(CONFIG.get("poll_seconds", 3)))
     notify_every = max(1, int(CONFIG.get("notify_seconds", 10)))
 
+    local_host = CONFIG["local_host"]
     with _db_lock:
-        ingest.import_lifetime(DB, CONFIG["claude_dir"])
-        ingest.ingest(DB, CONFIG["claude_dir"])
+        ingest.import_lifetime(DB, CONFIG["claude_dir"], local_host)
+        ingest.ingest(DB, CONFIG["claude_dir"], local_host)
+    stats_seen = stats_signature(local_host)
 
     while True:
         try:
             with _db_lock:
-                if ingest.ingest(DB, CONFIG["claude_dir"]):
+                if ingest.ingest(DB, CONFIG["claude_dir"], local_host):
                     with _state_lock:
                         _state["version"] += 1
+
+            signature = stats_signature(local_host)
+            if signature != stats_seen:
+                stats_seen = signature
+                with _db_lock:
+                    ingest.import_lifetime(DB, CONFIG["claude_dir"], local_host)
+                with _state_lock:
+                    _state["version"] += 1
         except sqlite3.Error as exc:
             print(f"ingest error: {exc}")
 
@@ -816,7 +963,8 @@ class Handler(BaseHTTPRequestHandler):
             if range_key not in RANGES:
                 range_key = "30d"
             project = params.get("project", ["all"])[0]
-            payload = json.dumps(build_snapshot(range_key, project)).encode()
+            host = params.get("host", ["all"])[0]
+            payload = json.dumps(build_snapshot(range_key, project, host)).encode()
             return self._send(200, payload, "application/json")
 
         if url.path == "/api/stream":

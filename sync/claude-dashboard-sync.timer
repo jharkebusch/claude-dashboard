@@ -1,0 +1,11 @@
+[Unit]
+Description=Push Claude Code usage data to the dashboard every minute
+
+[Timer]
+# Live session dots on the dashboard are only as fresh as this interval.
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

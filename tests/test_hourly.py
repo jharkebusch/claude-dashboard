@@ -33,19 +33,19 @@ class HourlySeriesTest(unittest.TestCase):
     def tearDown(self):
         serve.DB.close()
 
-    def add(self, when, tokens, project="alpha"):
+    def add(self, when, tokens, project="alpha", host="fedora"):
         """One request of `tokens` input tokens. The other token columns stay at
         zero, so the sum the queries take is exactly what was asked for."""
         self.rows += 1
         serve.DB.execute(
-            "INSERT INTO requests (request_id, ts, ts_epoch, model, session_id, project, input)"
-            " VALUES (?,?,?,?,?,?,?)",
-            (str(self.rows), when.isoformat(), when.timestamp(), "claude-opus-5", "s", project,
-             tokens),
+            "INSERT INTO requests (request_id, host, ts, ts_epoch, model, session_id, project, input)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (str(self.rows), host, when.isoformat(), when.timestamp(), "claude-opus-5", "s",
+             project, tokens),
         )
 
-    def series(self, days=7, project="all"):
-        result = serve.hourly_series(project, days, MIDNIGHT)
+    def series(self, days=7, project="all", host="all"):
+        result = serve.hourly_series(project, host, days, MIDNIGHT)
         return result, {h["hour"]: h for h in result["hours"]}
 
     def test_mean_is_taken_over_active_days_not_calendar_days(self):
@@ -102,6 +102,13 @@ class HourlySeriesTest(unittest.TestCase):
             self.add(local(day, 9), 9000, project="beta")
         _, hours = self.series(days=7, project="alpha")
         self.assertEqual(hours[9]["typical"], 1000)
+
+    def test_machine_filter_scopes_the_baseline(self):
+        self.add(local(1, 9), 100, host="fedora")
+        self.add(local(1, 9), 900, host="laptop")
+        self.add(local(2, 9), 100, host="fedora")
+        _, hours = self.series(host="fedora")
+        self.assertEqual(hours[9]["typical"], 100)
 
     def test_request_counts_are_averaged_too(self):
         self.add(local(1, 9), 1000)

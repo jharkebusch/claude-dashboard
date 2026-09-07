@@ -10,12 +10,25 @@ services:
       # Host-side 127.0.0.1 keeps it off the network, as on the host run.
       - "127.0.0.1:7581:7581"
     volumes:
+      # This machine's own ~/.claude. To merge several machines, point this at a
+      # directory holding one per-machine directory instead — the server reads
+      # every machine under it and names each after its directory.
       - ${HOME}/.claude:/claude:ro
       - dashboard-data:/data
     environment:
       CLAUDE_DIR: /claude
       DATA_DIR: /data
       DASHBOARD_HOST: 0.0.0.0
+      # The name the rows read from a single ~/.claude are recorded under; with
+      # a directory of machines mounted, each takes its name from its directory
+      # and this goes unused. Set it before the first start after upgrading an
+      # existing database: it is the name the history already in there is
+      # stamped with, and a mismatch shows that history as a separate machine.
+      DASHBOARD_LOCAL_HOST: ${DASHBOARD_LOCAL_HOST:-local}
+      # Which machine's credentials file the plan-limits call reads. Empty means
+      # whichever was written most recently, which is the least likely to have
+      # expired.
+      DASHBOARD_LIMITS_HOST: ${DASHBOARD_LIMITS_HOST:-}
       # Day and hour boundaries are computed in the container's timezone, and the
       # base image is UTC. Without this the by-hour chart is drawn shifted from
       # your wall clock and "today" starts at the wrong moment.

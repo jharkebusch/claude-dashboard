@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Push this machine's Claude Code state to a dashboard running elsewhere.
+#
+# The dashboard reads one directory per machine, named after the machine, so
+# this only has to put the files in the right place — the server picks up new
+# machines on its own. Everything is configured through the environment; the
+# systemd unit next to this file reads ~/.config/claude-dashboard-sync.env.
+set -euo pipefail
+
+TARGET="${DASHBOARD_TARGET:-contabo}"
+REMOTE_ROOT="${DASHBOARD_REMOTE_ROOT:-/srv/data/claude-dashboard/hosts}"
+MACHINE="${DASHBOARD_MACHINE:-$(hostname -s)}"
+CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
+# The dashboard can only show plan percentages if it has a token to ask with,
+# and that means a copy of this machine's OAuth credentials living on the
+# server. Off unless you turn it on, because it is the one thing here that
+# moves a secret off the machine that owns it.
+SYNC_CREDENTIALS="${DASHBOARD_SYNC_CREDENTIALS:-0}"
+
+[ -d "$CLAUDE_DIR/projects" ] || { echo "no transcripts at $CLAUDE_DIR/projects" >&2; exit 1; }
+
+filters=(
+    --include='/projects/***'
+    --include='/stats-cache.json'
+)
+if [ "$SYNC_CREDENTIALS" = "1" ]; then
+    filters+=(--include='/.credentials.json')
+fi
+filters+=(--exclude='*')
+
+ssh "$TARGET" "mkdir -p '$REMOTE_ROOT/$MACHINE'"
+
+# No --delete. Claude Code prunes transcripts after about a month and the
+# dashboard's database is the only place those months survive; deleting the
+# server's copy in step with the local one would throw that away on every run.
+# Transcripts are append-only, so after the first run this moves very little.
+exec rsync -a "${filters[@]}" "$CLAUDE_DIR/" "$TARGET:$REMOTE_ROOT/$MACHINE/"
