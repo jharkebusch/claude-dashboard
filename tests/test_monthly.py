@@ -50,6 +50,15 @@ class MonthlySeriesTest(unittest.TestCase):
         self.assertEqual(months["2026-02"]["tool_calls"], 50)
         self.assertEqual(months["2026-02"]["active_days"], 2)
 
+    def test_a_day_worked_on_two_machines_is_one_active_day(self):
+        # daily_activity is keyed (host, date), so counting rows would report a
+        # month with more active days than it has.
+        self.activity("2026-02-03", messages=100, host="fedora")
+        self.activity("2026-02-03", messages=40, host="laptop")
+        months = self.months(self.series())
+        self.assertEqual(months["2026-02"]["active_days"], 1)
+        self.assertEqual(months["2026-02"]["messages"], 140)
+
     def test_a_month_with_no_activity_is_still_a_bar(self):
         self.activity("2026-02-03")
         self.activity("2026-04-07")

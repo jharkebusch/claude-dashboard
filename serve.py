@@ -360,12 +360,14 @@ def monthly_series(meta):
     """
     first = (meta.get("first_session_date") or "")[:10]
     through = (meta.get("last_computed") or "")[:10]
+    # One row per machine per day, so the days are counted distinctly: a day two
+    # machines worked is one active day, not two.
     rows = {
         r["month"]: r
         for r in query(
             "SELECT substr(date, 1, 7) AS month, SUM(messages) AS messages,"
             " SUM(sessions) AS sessions, SUM(tool_calls) AS tool_calls,"
-            " COUNT(*) AS active_days FROM daily_activity GROUP BY month"
+            " COUNT(DISTINCT date) AS active_days FROM daily_activity GROUP BY month"
         )
     }
     if not rows:
