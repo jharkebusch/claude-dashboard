@@ -3,6 +3,10 @@ services:
     build: .
     image: claude-dashboard:latest
     container_name: claude-dashboard
+    # serve.py runs as PID 1 and never reaps children it did not start. A health
+    # check that times out kills its `sh -c` and orphans the python3 under it,
+    # which then lingers as a zombie; Docker's init reaps it instead.
+    init: true
     # Must match the owner of ~/.claude — the credentials file is 0600.
     # Override with DASHBOARD_UID / DASHBOARD_GID if yours is not 1000 (`id -u`).
     user: "${DASHBOARD_UID:-1000}:${DASHBOARD_GID:-1000}"
