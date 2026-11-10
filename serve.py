@@ -9,6 +9,7 @@ ingest.py keeps in step with ~/.claude/projects. Standard library only.
 import json
 import os
 import re
+import shlex
 import sqlite3
 import threading
 import time
@@ -51,6 +52,8 @@ LIMITS_MAX_INTERVAL = 900       # ceiling the backoff climbs to after failures
 MANUAL_COOLDOWN = 15            # shortest gap between manual refreshes
 LIVE_WINDOW = 300               # wrote this recently -> shown as running
 OPEN_WINDOW = 900               # wrote this recently -> still listed, marked idle
+AGENTS_STALE = 180              # a machine's session list older than this is not trusted
+LONG_SESSIONS_LIMIT = 20
 HOME_PREFIX = re.compile(r"^(/home/[^/]+|/Users/[^/]+|/root)(?=/|$)")
 
 _db_lock = threading.Lock()
@@ -638,6 +641,7 @@ def build_snapshot(range_key, project, host):
         "hosts": hosts,
         "sessions": recent_sessions(scope, params),
         "live_sessions": live_sessions(),
+        "long_sessions": long_sessions(scope, params, machine_agents()),
         "automated_recent": automated_recent(),
         "cost_enabled": bool(CONFIG.get("show_cost", True)),
         "other_color": OTHER_COLOR,
@@ -688,11 +692,14 @@ def _session_rows(sql, params):
 SESSION_SELECT = (
     "SELECT r.session_id AS session_id, MIN(ts_epoch) AS start, MAX(ts_epoch) AS end,"
     " MAX(r.host) AS host, MAX(project) AS project, MAX(cwd) AS cwd, MAX(branch) AS branch,"
-    " GROUP_CONCAT(DISTINCT model) AS models, t.title AS title,"
+    # A name the session was given (`--name`, `/rename`) is what `/resume` and
+    # `claude attach` show, so it wins over the title Claude Code generated.
+    " GROUP_CONCAT(DISTINCT model) AS models, COALESCE(i.name, t.title) AS title,"
     " MAX(s.entrypoint) AS entrypoint,"
     f" {TOKEN_SUM}"
     " FROM requests r"
     " LEFT JOIN titles t ON t.session_id = r.session_id"
+    " LEFT JOIN session_info i ON i.session_id = r.session_id"
     " LEFT JOIN sessions s ON s.session_id = r.session_id"
 )
 
@@ -756,6 +763,162 @@ def live_sessions(limit=8):
                 }
             )
         row["active"] = (now - datetime.fromisoformat(row["end"]).timestamp()) < LIVE_WINDOW
+    return rows
+
+
+def machine_agents():
+    """Each machine's open sessions, from the `agents.json` its sync uploads.
+
+    {machine: {session id: entry}}, where an entry is one row of that machine's
+    `claude agents --json`. A machine whose list is missing or older than
+    AGENTS_STALE is left out, so its sessions read as unknown rather than ended.
+    The age is the file's mtime on this server — the sync uploads it without
+    preserving times — so the two machines' clocks are never compared.
+    """
+    machines = {}
+    now = time.time()
+    for host, directory in ingest.host_dirs(CONFIG["claude_dir"], CONFIG["local_host"]):
+        path = directory / "agents.json"
+        try:
+            if now - path.stat().st_mtime > AGENTS_STALE:
+                continue
+            entries = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(entries, list):
+            machines[host] = {
+                e["sessionId"]: e for e in entries if isinstance(e, dict) and e.get("sessionId")
+            }
+    return machines
+
+
+# Background sessions, sessions started from a handoff, and anything compacted:
+# the ones that run long and are hard to find again.
+LONG_SESSION = (
+    "(i.kind = 'bg' OR i.handoff IS NOT NULL OR i.name LIKE 'handoff-%'"
+    " OR EXISTS (SELECT 1 FROM compactions c WHERE c.session_id = r.session_id))"
+)
+
+
+def _resume_command(session_id, cwd):
+    """`cd <dir> && claude --resume <id>`, with the home prefix left unquoted so it expands."""
+    path = short_path(cwd)
+    if path.startswith("~/"):
+        where = "~/" + shlex.quote(path[2:])
+    else:
+        where = shlex.quote(path or ".")
+    return f"cd {where} && claude --resume {session_id}"
+
+
+def long_sessions(scope, params, agents):
+    """Long-running sessions for the section of that name, open ones first.
+
+    The page's filters choose which sessions appear, but a session a machine
+    reports open is listed whatever the range — those are the ones to get back
+    into. The figures on each card cover the whole session, not the range.
+    """
+    open_ids = [sid for entries in agents.values() for sid in entries]
+    marks = ",".join("?" * len(open_ids))
+    ids = [
+        r["session_id"]
+        for r in query(
+            "SELECT r.session_id FROM requests r"
+            " LEFT JOIN session_info i ON i.session_id = r.session_id"
+            f" WHERE {LONG_SESSION} AND (({scope}) OR r.session_id IN ({marks}))"
+            " GROUP BY r.session_id ORDER BY MAX(r.ts_epoch) DESC LIMIT ?",
+            [*params, *open_ids, LONG_SESSIONS_LIMIT],
+        )
+    ]
+    if not ids:
+        return []
+
+    marks = ",".join("?" * len(ids))
+    rows = _session_rows(
+        f"{SESSION_SELECT} WHERE r.session_id IN ({marks}) GROUP BY r.session_id", ids
+    )
+    info = {r["session_id"]: dict(r) for r in query(
+        f"SELECT * FROM session_info WHERE session_id IN ({marks})", ids
+    )}
+    # The newest main-thread request: where the session is now, and how much
+    # context it last sent.
+    latest = {r["session_id"]: r for r in query(
+        "SELECT session_id, ts_epoch, cwd, branch,"
+        " input + cache_read + cache_w5m + cache_w1h AS context FROM requests r"
+        f" WHERE sidechain = 0 AND session_id IN ({marks}) AND ts_epoch = ("
+        "  SELECT MAX(ts_epoch) FROM requests WHERE session_id = r.session_id AND sidechain = 0)",
+        ids,
+    )}
+    compactions = {}
+    for c in query(
+        f"SELECT * FROM compactions WHERE session_id IN ({marks}) ORDER BY ts_epoch", ids
+    ):
+        compactions.setdefault(c["session_id"], []).append(c)
+    prs = {}
+    for p in query(
+        f"SELECT * FROM session_prs WHERE session_id IN ({marks}) ORDER BY ts_epoch", ids
+    ):
+        label = f"{(p['repo'] or '').rsplit('/', 1)[-1]}#{p['number']}" if p["number"] else p["url"]
+        prs.setdefault(p["session_id"], []).append({"url": p["url"], "label": label})
+
+    window = int(CONFIG.get("context_window", 1_000_000))
+    for row in rows:
+        sid = row["id"]
+        meta = info.get(sid, {})
+        last = latest.get(sid)
+        if last:
+            row["path"] = short_path(last["cwd"] or "")
+            row["branch"] = last["branch"] or ""
+
+        done = compactions.get(sid, [])
+        compacted = done[-1] if done else None
+        # A compaction newer than the last request is what the next request will
+        # start from; otherwise the last request's prompt is the context.
+        if compacted and (not last or compacted["ts_epoch"] > last["ts_epoch"]):
+            context = compacted["post_tokens"] or 0
+        else:
+            context = last["context"] if last else 0
+
+        entries = agents.get(row["host"])
+        entry = (entries or {}).get(sid)
+        if entries is None:
+            status = "unknown"
+        elif entry:
+            # The CLI's own words: "busy", "idle", or a state such as "blocked".
+            status = entry.get("state") or entry.get("status") or "open"
+        else:
+            status = "ended"
+
+        if entry and entry.get("kind") == "background":
+            command = f"claude attach {entry.get('id') or sid[:8]}"
+        elif entry:
+            command = None  # open in a terminal on that machine
+        else:
+            command = _resume_command(sid, last["cwd"] if last else "")
+
+        row.update(
+            {
+                "background": meta.get("kind") == "bg",
+                "status": status,
+                "open": entry is not None,
+                "context": context,
+                "context_window": window,
+                "compactions": len(done),
+                "last_compaction": {
+                    "at": datetime.fromtimestamp(compacted["ts_epoch"], timezone.utc).isoformat(),
+                    "trigger": compacted["trigger"] or "",
+                    "before": compacted["pre_tokens"] or 0,
+                    "after": compacted["post_tokens"] or 0,
+                } if compacted else None,
+                "summary": meta.get("summary"),
+                "summary_at": datetime.fromtimestamp(meta["summary_at"], timezone.utc).isoformat()
+                if meta.get("summary_at") else None,
+                "handoff": short_path(meta["handoff"]) if meta.get("handoff") else None,
+                "remote_url": meta.get("remote_url") if status != "ended" else None,
+                "prs": prs.get(sid, []),
+                "command": command,
+            }
+        )
+    rows.sort(key=lambda r: (not r["open"], -datetime.fromisoformat(r["end"]).timestamp()))
     return rows
 
 
@@ -902,6 +1065,7 @@ def refresher():
         ingest.import_lifetime(DB, CONFIG["claude_dir"], local_host)
         ingest.ingest(DB, CONFIG["claude_dir"], local_host)
     stats_seen = stats_signature(local_host)
+    agents_seen = machine_agents()
 
     while True:
         try:
@@ -919,6 +1083,15 @@ def refresher():
                     _state["version"] += 1
         except sqlite3.Error as exc:
             print(f"ingest error: {exc}")
+
+        # Compared by content: every machine re-uploads its list each minute, and
+        # only a session starting, stopping or changing state is news. A list
+        # going stale changes this too, which is what turns its sessions unknown.
+        agents = machine_agents()
+        if agents != agents_seen:
+            agents_seen = agents
+            with _state_lock:
+                _state["version"] += 1
 
         with _state_lock:
             due = time.time() >= _state["next_limits"]

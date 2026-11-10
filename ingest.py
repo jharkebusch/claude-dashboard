@@ -12,6 +12,7 @@ costs nothing but the read.
 """
 
 import json
+import re
 import socket
 import sqlite3
 from datetime import datetime, timezone
@@ -59,6 +60,42 @@ CREATE TABLE IF NOT EXISTS titles (
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     entrypoint TEXT
+);
+
+-- What a long-running session is, beyond its requests: the name it was started
+-- under, `kind` "bg" when it runs detached (`claude --bg`), the handoff file it
+-- was started from, its Remote Control link, and the latest of Claude Code's own
+-- away summaries. Main-thread records only — a subagent's transcript carries its
+-- parent's session id.
+CREATE TABLE IF NOT EXISTS session_info (
+    session_id TEXT PRIMARY KEY,
+    name       TEXT,
+    kind       TEXT,
+    handoff    TEXT,
+    remote_url TEXT,
+    summary    TEXT,
+    summary_at REAL
+);
+
+-- One row per compaction, keyed by its boundary record so reading a transcript
+-- again adds nothing.
+CREATE TABLE IF NOT EXISTS compactions (
+    uuid        TEXT PRIMARY KEY,
+    session_id  TEXT    NOT NULL,
+    ts_epoch    REAL    NOT NULL,
+    trigger     TEXT,
+    pre_tokens  INTEGER,
+    post_tokens INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_compactions_session ON compactions(session_id);
+
+CREATE TABLE IF NOT EXISTS session_prs (
+    session_id TEXT NOT NULL,
+    url        TEXT NOT NULL,
+    repo       TEXT,
+    number     INTEGER,
+    ts_epoch   REAL,
+    PRIMARY KEY (session_id, url)
 );
 
 -- Lifetime per-model totals from stats-cache.json. Claude Code prunes
@@ -120,8 +157,16 @@ def connect(db_path, local_host=None):
     db = sqlite3.connect(db_path, check_same_thread=False)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
+    had_session_info = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_info'"
+    ).fetchone()
     db.executescript(SCHEMA)
     _migrate(db, local_host or local_hostname())
+    if not had_session_info:
+        # Every transcript read so far was read for its requests only. Read them
+        # all once more so their session records are picked up; each write ingest
+        # makes is an insert-or-ignore or an upsert, so nothing is counted twice.
+        db.execute("UPDATE files SET offset = 0, size = -1")
     # After the migration, never in SCHEMA: on a database written before
     # machines existed the column does not exist yet when SCHEMA runs.
     db.execute("CREATE INDEX IF NOT EXISTS idx_requests_host ON requests(host)")
@@ -241,6 +286,66 @@ def _request_row(rec, host):
     )
 
 
+# The kickoff prompt the handoff skill starts its background session with
+# (skills/handoff/scripts/start-session.sh). Matched at the very start of a typed
+# prompt only, so a transcript that merely quotes it in tool output is no handoff.
+HANDOFF_PROMPT = re.compile(r"Lies den Handoff (\S+\.md) ")
+
+# Substrings that make a line worth parsing for session records. Only a filter:
+# the parsed record is checked properly, since tool output can contain any text.
+SESSION_MARKERS = (
+    '"custom-title"', '"compact_boundary"', '"away_summary"', '"bridge_status"',
+    '"pr-link"', "Lies den Handoff ",
+)
+
+
+def _https(url):
+    """Links taken from transcripts end up as hrefs on the page; only https passes."""
+    return url if isinstance(url, str) and url.startswith("https://") else None
+
+
+def _prompt_text(rec):
+    content = (rec.get("message") or {}).get("content")
+    if isinstance(content, list):
+        content = next(
+            (b.get("text") for b in content if isinstance(b, dict) and b.get("type") == "text"),
+            None,
+        )
+    return content if isinstance(content, str) else ""
+
+
+def _session_record(rec, info, compactions, prs):
+    """Fold one record into the pending session rows. Returns whether it was one."""
+    sid = rec.get("sessionId")
+    if not sid or rec.get("isSidechain"):
+        return False
+    kind, subtype, ts = rec.get("type"), rec.get("subtype"), rec.get("timestamp")
+    if kind == "custom-title" and rec.get("customTitle"):
+        info.setdefault(sid, {})["name"] = rec["customTitle"]
+    elif kind == "system" and subtype == "compact_boundary" and rec.get("uuid") and ts:
+        meta = rec.get("compactMetadata") or {}
+        compactions.append(
+            (rec["uuid"], sid, epoch(ts), meta.get("trigger"), meta.get("preTokens"),
+             meta.get("postTokens"))
+        )
+    elif kind == "system" and subtype == "away_summary" and rec.get("content") and ts:
+        info.setdefault(sid, {}).update(summary=rec["content"], summary_at=epoch(ts))
+    elif kind == "system" and subtype == "bridge_status" and _https(rec.get("url")):
+        info.setdefault(sid, {})["remote_url"] = rec["url"]
+    elif kind == "pr-link" and _https(rec.get("prUrl")):
+        prs.append(
+            (sid, rec["prUrl"], rec.get("prRepository"), rec.get("prNumber"),
+             epoch(ts) if ts else None)
+        )
+    elif kind == "user" and not rec.get("isMeta") and (
+        match := HANDOFF_PROMPT.match(_prompt_text(rec))
+    ):
+        info.setdefault(sid, {}).setdefault("handoff", match[1])
+    else:
+        return False
+    return True
+
+
 def _read_new_lines(path, offset):
     """Return (complete lines, new offset). A half-written trailing line is left
     for the next pass so a session being appended to never yields a torn record."""
@@ -257,10 +362,18 @@ def _read_new_lines(path, offset):
 
 
 def ingest(db, claude_dir, local_host=None):
-    """Read every machine's new transcript bytes. Returns the number of new requests."""
+    """Read every machine's new transcript bytes.
+
+    Returns how many records it took in — requests plus session records — so the
+    caller knows the page has something new to show even when no request did.
+    """
     seen = {r["path"]: r for r in db.execute("SELECT * FROM files")}
     known_sessions = {r["session_id"] for r in db.execute("SELECT session_id FROM sessions")}
+    known_bg = {
+        r["session_id"] for r in db.execute("SELECT session_id FROM session_info WHERE kind = 'bg'")
+    }
     rows, titles, file_state, origins = [], {}, [], {}
+    info, compactions, prs, session_records = {}, [], [], 0
 
     for host, directory in host_dirs(claude_dir, local_host or local_hostname()):
         for path in (directory / "projects").rglob("*.jsonl"):
@@ -286,6 +399,8 @@ def ingest(db, claude_dir, local_host=None):
             # be looked for until it is known — no parsing of user records after
             # that.
             want_origin = path.stem not in known_sessions and path.stem not in origins
+            # Every record of a background session says so; one is enough.
+            want_kind = path.stem not in known_bg and "kind" not in info.get(path.stem, {})
 
             for line in lines:
                 if want_origin and '"entrypoint"' in line:
@@ -296,6 +411,23 @@ def ingest(db, claude_dir, local_host=None):
                     if rec.get("sessionId") and rec.get("entrypoint"):
                         origins[rec["sessionId"]] = rec["entrypoint"]
                         want_origin = False
+                if want_kind and '"sessionKind":"bg"' in line:
+                    want_kind = False
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        rec = {}
+                    if rec.get("sessionId") and not rec.get("isSidechain"):
+                        info.setdefault(rec["sessionId"], {})["kind"] = "bg"
+                        session_records += 1
+                if any(marker in line for marker in SESSION_MARKERS):
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if _session_record(rec, info, compactions, prs):
+                        session_records += 1
+                        continue
                 if '"assistant"' not in line and '"ai-title"' not in line:
                     continue
                 try:
@@ -326,6 +458,26 @@ def ingest(db, claude_dir, local_host=None):
         )
     if origins:
         db.executemany("INSERT OR IGNORE INTO sessions VALUES (?,?)", list(origins.items()))
+    if info:
+        # A later record replaces an earlier one, except the handoff: a session is
+        # started from one handoff, and that is the first it was told to read.
+        db.executemany(
+            "INSERT INTO session_info VALUES (?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET"
+            " name = COALESCE(excluded.name, name), kind = COALESCE(excluded.kind, kind),"
+            " handoff = COALESCE(handoff, excluded.handoff),"
+            " remote_url = COALESCE(excluded.remote_url, remote_url),"
+            " summary = COALESCE(excluded.summary, summary),"
+            " summary_at = COALESCE(excluded.summary_at, summary_at)",
+            [
+                (sid, f.get("name"), f.get("kind"), f.get("handoff"), f.get("remote_url"),
+                 f.get("summary"), f.get("summary_at"))
+                for sid, f in info.items()
+            ],
+        )
+    if compactions:
+        db.executemany("INSERT OR IGNORE INTO compactions VALUES (?,?,?,?,?,?)", compactions)
+    if prs:
+        db.executemany("INSERT OR IGNORE INTO session_prs VALUES (?,?,?,?,?)", prs)
     if file_state:
         db.executemany(
             "INSERT INTO files VALUES (?,?,?,?) ON CONFLICT(path) DO UPDATE SET"
@@ -333,7 +485,7 @@ def ingest(db, claude_dir, local_host=None):
             file_state,
         )
     db.commit()
-    return len(rows)
+    return len(rows) + session_records
 
 
 def _import_host_lifetime(db, host, directory):
@@ -418,6 +570,6 @@ if __name__ == "__main__":
     total = db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
     machines = db.execute("SELECT COUNT(DISTINCT host) FROM requests").fetchone()[0]
     print(
-        f"{new} new requests ({total} total from {machines} machines),"
+        f"{new} new records ({total} requests from {machines} machines),"
         f" {models} lifetime models, {time.time() - start:.2f}s"
     )
