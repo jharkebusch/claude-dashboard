@@ -16,6 +16,10 @@ CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 # server. Off unless you turn it on, because it is the one thing here that
 # moves a secret off the machine that owns it.
 SYNC_CREDENTIALS="${DASHBOARD_SYNC_CREDENTIALS:-0}"
+# Which sessions are open here, for the Long sessions card's live status. An
+# absolute path: a systemd user unit does not have ~/.local/bin on its PATH.
+SYNC_AGENTS="${DASHBOARD_SYNC_AGENTS:-1}"
+CLAUDE_BIN="${DASHBOARD_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 
 [ -d "$CLAUDE_DIR/projects" ] || { echo "no transcripts at $CLAUDE_DIR/projects" >&2; exit 1; }
 
@@ -34,4 +38,23 @@ ssh "$TARGET" "mkdir -p '$REMOTE_ROOT/$MACHINE'"
 # dashboard's database is the only place those months survive; deleting the
 # server's copy in step with the local one would throw that away on every run.
 # Transcripts are append-only, so after the first run this moves very little.
-exec rsync -a "${filters[@]}" "$CLAUDE_DIR/" "$TARGET:$REMOTE_ROOT/$MACHINE/"
+rsync -a "${filters[@]}" "$CLAUDE_DIR/" "$TARGET:$REMOTE_ROOT/$MACHINE/"
+
+# Best effort from here: the transcripts are what matters. When this fails, the
+# last list uploaded goes stale on the server and this machine's sessions read
+# as "unknown" instead of as whatever they were.
+[ "$SYNC_AGENTS" = "1" ] && [ -x "$CLAUDE_BIN" ] || exit 0
+# A Claude Code without the subcommand reads "agents" as a prompt and starts a
+# session, so make sure it is one. --help never starts a session either way.
+help="$("$CLAUDE_BIN" agents --help </dev/null 2>/dev/null || true)"
+case "$help" in "Usage: claude agents"*) ;; *) exit 0 ;; esac
+
+agents="$(mktemp)"
+trap 'rm -f "$agents"' EXIT
+timeout 20 "$CLAUDE_BIN" agents --json </dev/null >"$agents" 2>/dev/null || exit 0
+# Written whole and renamed into place, so the server never reads half a list.
+# The write also stamps the file with the server's clock, which is the one its
+# staleness check measures against.
+remote="$REMOTE_ROOT/$MACHINE"
+ssh "$TARGET" "cat > '$remote/.agents.json.tmp' && mv '$remote/.agents.json.tmp' '$remote/agents.json'" \
+    <"$agents" || echo "could not upload the session list" >&2

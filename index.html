@@ -116,7 +116,7 @@ select:hover { color: var(--ink); }
 .session-list { display: grid; gap: var(--gap); }
 .session-top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
 .session-title { font-size: 15px; font-weight: 600; }
-.session-path { color: var(--muted); font-size: 12px; }
+.session-path { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .session-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 14px; margin-top: 14px; }
 .session-grid div span { display: block; color: var(--muted); font-size: 11px; }
 .session-grid div b { font-weight: 600; font-size: 16px; font-variant-numeric: tabular-nums; }
@@ -128,6 +128,22 @@ select:hover { color: var(--ink); }
 .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 .swatch.line { width: 12px; height: 2px; border-radius: 1px; }
 .chip.auto { font-size: 10px; padding: 1px 7px; margin-left: 8px; color: var(--muted); }
+
+.dot.blocked { background: var(--warning); box-shadow: 0 0 0 3px rgba(250, 178, 25, 0.18); }
+.session-grid div small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.session-grid .bar-track { margin-top: 6px; }
+.long-summary { color: var(--ink-2); font-size: 13px; margin: 10px 0 0; max-width: 90ch; }
+.long-foot {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+    margin-top: 14px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere;
+}
+.long-foot a { color: var(--ink-2); }
+.long-foot a:hover { color: var(--ink); }
+.cmd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+    color: var(--ink); background: rgba(255, 255, 255, 0.06); border-radius: 6px;
+    padding: 3px 8px; user-select: all; overflow-wrap: anywhere;
+}
 
 /* --- charts ------------------------------------------------------------- */
 
@@ -213,6 +229,11 @@ main { transition: opacity .15s ease; }
     <section>
         <div class="section-head"><h2 id="session-heading">Current session</h2><span class="note" id="session-age"></span></div>
         <div class="session-list" id="session"></div>
+    </section>
+
+    <section id="long-section" hidden>
+        <div class="section-head"><h2>Long sessions</h2><span class="note" id="long-note"></span></div>
+        <div class="session-list" id="long-sessions"></div>
     </section>
 
     <section>
@@ -857,6 +878,97 @@ function renderLiveSessions(snap) {
     for (const s of list) host.appendChild(sessionCard(s, snap.cost_enabled, multi));
 }
 
+function longSessionCard(s, showCost, showHost) {
+    const card = el("div", { class: "card" });
+    const top = el("div", { class: "session-top" });
+    const dot = { busy: " live", blocked: " blocked" }[s.status] || "";
+    top.appendChild(el("span", { class: "dot" + dot }));
+    top.appendChild(el("span", { class: "session-title", text: s.title || "Untitled session" }));
+    if (showHost && s.host) top.appendChild(el("span", { class: "chip", text: s.host }));
+    top.appendChild(el("span", { class: "session-path", text: `${s.path || s.project}${s.branch ? " · " + s.branch : ""}` }));
+    top.appendChild(el("span", { class: "chip", text: s.status === "unknown" ? "status unknown" : s.status }));
+    if (s.background) top.appendChild(el("span", { class: "chip auto", text: "background" }));
+    const idle = (Date.now() - new Date(s.end).getTime()) / 1000;
+    top.appendChild(el("span", { class: "session-path", text: `last request ${fmtDuration(idle)} ago` }));
+    card.appendChild(top);
+
+    // Claude Code writes these while a session is left alone, so one can be days old.
+    if (s.summary) {
+        card.appendChild(el("p", { class: "long-summary" }, [
+            document.createTextNode(s.summary),
+            ...(s.summary_at ? [el("span", { class: "note", text: ` · ${fmtStamp(s.summary_at)}` })] : [])
+        ]));
+    }
+
+    const grid = el("div", { class: "session-grid" });
+    const fill = s.context_window ? s.context / s.context_window : 0;
+    const track = el("div", { class: "bar-track" });
+    track.appendChild(el("div", {
+        class: "bar-fill",
+        style: `width:${Math.min(100, Math.max(1.5, fill * 100)).toFixed(1)}%; background:var(${severity(fill * 100)})`
+    }));
+    grid.appendChild(el("div", {}, [
+        el("span", { text: "Context now" }),
+        el("b", { text: fmtTokens(s.context) }),
+        el("small", { text: `${Math.round(fill * 100)}% of ${fmtTokens(s.context_window)}` }),
+        track
+    ]));
+    const c = s.last_compaction;
+    grid.appendChild(el("div", {}, [
+        el("span", { text: "Compactions" }),
+        el("b", { text: fmtInt(s.compactions) }),
+        ...(c ? [el("small", { text: `last ${fmtTokens(c.before)} to ${fmtTokens(c.after)} · ${c.trigger} · ${fmtStamp(c.at)}` })] : [])
+    ]));
+    const cells = [
+        ["Tokens", fmtTokens(s.tokens)],
+        ["Turns", fmtInt(s.turns)],
+        ["Duration", fmtDuration((new Date(s.end) - new Date(s.start)) / 1000)],
+        ["Started", fmtStamp(s.start)]
+    ];
+    if (showCost) cells.push(["API-equivalent", fmtUSD(s.cost)]);
+    for (const [label, value] of cells) {
+        grid.appendChild(el("div", {}, [el("span", { text: label }), el("b", { text: value })]));
+    }
+    card.appendChild(grid);
+
+    // How to get back in: attach while it runs detached, resume once it ended.
+    const foot = el("div", { class: "long-foot" });
+    foot.appendChild(s.command
+        ? el("code", { class: "cmd", text: s.command })
+        : el("span", { text: "open in a terminal" + (showHost ? ` on ${s.host}` : "") }));
+    if (s.remote_url) {
+        foot.appendChild(el("a", { href: s.remote_url, target: "_blank", rel: "noopener noreferrer", text: "Remote Control" }));
+    }
+    if (s.prs.length) {
+        const shown = s.prs.slice(-4);
+        const prs = el("span", { text: "PRs " });
+        shown.forEach((pr, i) => {
+            if (i) prs.appendChild(document.createTextNode(", "));
+            prs.appendChild(el("a", { href: pr.url, target: "_blank", rel: "noopener noreferrer", text: pr.label }));
+        });
+        if (s.prs.length > shown.length) prs.appendChild(document.createTextNode(` and ${s.prs.length - shown.length} earlier`));
+        foot.appendChild(prs);
+    }
+    if (s.handoff) foot.appendChild(el("span", { text: "handoff " + s.handoff }));
+    card.appendChild(foot);
+    return card;
+}
+
+function renderLongSessions(snap) {
+    const list = snap.long_sessions || [];
+    const section = document.getElementById("long-section");
+    section.hidden = !list.length;
+    if (section.hidden) return;
+
+    const host = document.getElementById("long-sessions");
+    host.textContent = "";
+    const open = list.filter(s => s.open).length;
+    document.getElementById("long-note").textContent =
+        `background, handoff and compacted sessions · ${open} open · ended ones follow the filters`;
+    const multi = machineCount(snap) > 1;
+    for (const s of list) host.appendChild(longSessionCard(s, snap.cost_enabled, multi));
+}
+
 function renderDailyExtras(snap) {
     const legend = document.getElementById("daily-legend");
     legend.textContent = "";
@@ -1150,6 +1262,7 @@ function render(snap) {
     renderLimits(snap);
     renderTiles(snap);
     renderLiveSessions(snap);
+    renderLongSessions(snap);
     renderDailyExtras(snap);
     renderDaily(snap.daily, snap.models, snap.other_color, snap.daily_usual);
     renderHourlyExtras(snap);

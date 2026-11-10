@@ -103,6 +103,8 @@ Settings go in `~/.config/claude-dashboard-sync.env`:
 | `DASHBOARD_REMOTE_ROOT` | `/srv/data/claude-dashboard/hosts` | the directory of machines on it |
 | `DASHBOARD_MACHINE` | `hostname -s` | this machine's name, and its directory |
 | `DASHBOARD_SYNC_CREDENTIALS` | `0` | also copy `.credentials.json` — see below |
+| `DASHBOARD_SYNC_AGENTS` | `1` | also upload `claude agents --json` as `agents.json`, the live status on the **Long sessions** cards |
+| `DASHBOARD_CLAUDE_BIN` | `~/.local/bin/claude` | the Claude Code binary that list comes from. An absolute path, because a systemd user unit has no `~/.local/bin` on its `PATH`. |
 
 It never passes `--delete`. Claude Code prunes transcripts after about a month
 and the dashboard's database is the only place those months survive, so deleting
@@ -113,6 +115,14 @@ very little.
 The timer's interval is the freshness of everything live on the page — the
 running-session dots go stale by up to that long — and nothing else depends on
 it. A minute is a reasonable default.
+
+The session list is best effort and comes after the transcripts, so a failure
+there never holds them back. It is written whole and renamed into place, which
+also stamps it with the server's clock: the server stops trusting a machine's
+list once it is three minutes old, and that machine's sessions then read as
+"unknown" rather than as whatever they last were. The script checks that
+`claude agents` is a subcommand before calling it — a Claude Code without it
+would read "agents" as a prompt and start a session.
 
 ### Plan limits across machines
 
@@ -157,6 +167,12 @@ has long since pruned the transcripts behind the older rows, and that database i
 the only copy of them. Set that variable to the name the machine will sync under
 **before** the first start, or its history reads as a machine of its own.
 
+A database written before the **Long sessions** card has read every transcript
+for its requests only. On the first start after the upgrade it reads every
+transcript once more, from the beginning, to pick up the session records; each
+write is an insert-or-ignore or an upsert, so no request is counted twice. The
+page waits while that runs — a few seconds per gigabyte of transcripts.
+
 ## Where the numbers come from
 
 | Figure | Source |
@@ -176,6 +192,28 @@ handful of those would otherwise crowd out the windows you actually opened. They
 are still real spend, so they stay in every total and appear in the sessions
 table marked `auto`. The signal is the `entrypoint` each transcript records —
 `cli` for a session you type in, `sdk-py` for one a plugin started.
+
+**Long sessions** is for the sessions that are hard to find again: background
+sessions (`claude --bg`, which records `sessionKind: "bg"`), sessions started
+from a handoff, and any session that has been compacted. A session its machine
+reports open is always listed; ended ones follow the filters. Each card reads,
+from the transcript:
+
+- the context it is carrying now — the prompt size of its last main-thread
+  request, or what it was compacted to when a compaction is newer — against
+  `context_window`
+- its compactions, from the `compact_boundary` records (size before and after,
+  manual or automatic)
+- Claude Code's own latest away summary, the PRs it opened, its Remote Control
+  link and the handoff file it was started from
+
+and, from that machine's `agents.json`, whether it is still open and in what
+state, in the CLI's own words (`busy`, `idle`, `blocked`). That decides how to
+get back in: `claude attach <id>` while it runs in the background,
+`cd <dir> && claude --resume <id>` once it has ended. A name the session was
+given (`--name`, `/rename`) is shown over the generated title everywhere on the
+page, since that is what `/resume` and `claude attach` show. Subagent records
+carry their parent's session id and are ignored for all of this.
 
 **By hour** puts today's bars against the day you usually have, on one shared
 scale. The baseline is a mean over *active* days — days you used Claude at all —
@@ -274,6 +312,7 @@ recovery is picked up on its own; **Refresh** forces the question immediately.
 | `limits_refresh_seconds` | How often the account endpoint is called. Default 300, floored at 120 — it rate-limits, and the reset times it returns only move once every few hours. |
 | `show_cost` | Show or hide every cost figure |
 | `default_range` | Range selected on load |
+| `context_window` | Tokens the **Long sessions** cards measure a session's current context against (default 1,000,000) |
 | `series_colors` | Fixed model → colour map for the stacked chart |
 
 ### About `series_colors`

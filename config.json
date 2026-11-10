@@ -8,6 +8,9 @@
   "show_cost": true,
   "default_range": "30d",
 
+  "_context_window": "Tokens the Long sessions cards measure a session's current context against — the model's context window.",
+  "context_window": 1000000,
+
   "_machines": "Several machines can feed one dashboard: each syncs its ~/.claude into a directory named after it under claude_dir, and that directory name labels its rows. local_host names this machine's own rows when claude_dir is a single ~/.claude instead; empty means the system hostname. limits_host pins which machine's credentials file the plan-limits call reads; empty means the most recently written one, which is the one least likely to have expired.",
   "local_host": "",
   "limits_host": "",
