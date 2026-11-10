@@ -235,6 +235,18 @@ class LongSessionsTest(unittest.TestCase):
                       "status": "busy"}], age=serve.AGENTS_STALE + 60)
         self.assertEqual(self.listed()["bg-1"]["status"], "unknown")
 
+    def test_the_limit_never_cuts_an_open_session(self):
+        # More recently active long sessions than the card shows, and one open
+        # session that has been idle for days.
+        for n in range(serve.LONG_SESSIONS_LIMIT + 2):
+            self.transcript(f"recent-{n}", [request(f"recent-{n}", f"q{n}", 10 + n, 1000),
+                                            compaction(f"recent-{n}", f"cq{n}", 5, 900_000, 20_000)])
+        self.compacted_background_session()
+        self.ingest()
+        self.agents([{"id": "bg-1abcd", "sessionId": "bg-1", "kind": "background", "status": "idle"}])
+        listed = self.listed()
+        self.assertEqual((len(listed), "bg-1" in listed), (serve.LONG_SESSIONS_LIMIT, True))
+
     def test_an_open_session_is_listed_whatever_the_range(self):
         self.transcript("old", [request("old", "o1", 60 * 24 * 40, 1000),
                                 compaction("old", "u1", 60 * 24 * 40, 900_000, 20_000)])

@@ -819,14 +819,18 @@ def long_sessions(scope, params, agents):
     """
     open_ids = [sid for entries in agents.values() for sid in entries]
     marks = ",".join("?" * len(open_ids))
+    # Open ones rank first, so the limit can never cut a session that is idle but
+    # still running. Only with something open: SQLite folds an empty IN () to the
+    # literal 0, which ORDER BY would read as a column number.
+    open_first = f"r.session_id IN ({marks}) DESC, " if open_ids else ""
     ids = [
         r["session_id"]
         for r in query(
             "SELECT r.session_id FROM requests r"
             " LEFT JOIN session_info i ON i.session_id = r.session_id"
             f" WHERE {LONG_SESSION} AND (({scope}) OR r.session_id IN ({marks}))"
-            " GROUP BY r.session_id ORDER BY MAX(r.ts_epoch) DESC LIMIT ?",
-            [*params, *open_ids, LONG_SESSIONS_LIMIT],
+            f" GROUP BY r.session_id ORDER BY {open_first}MAX(r.ts_epoch) DESC LIMIT ?",
+            [*params, *open_ids, *open_ids, LONG_SESSIONS_LIMIT],
         )
     ]
     if not ids:
@@ -840,12 +844,12 @@ def long_sessions(scope, params, agents):
         f"SELECT * FROM session_info WHERE session_id IN ({marks})", ids
     )}
     # The newest main-thread request: where the session is now, and how much
-    # context it last sent.
+    # context it last sent. With a single max() SQLite takes the bare columns
+    # from the row holding the maximum, so this is one pass, not one per row.
     latest = {r["session_id"]: r for r in query(
-        "SELECT session_id, ts_epoch, cwd, branch,"
-        " input + cache_read + cache_w5m + cache_w1h AS context FROM requests r"
-        f" WHERE sidechain = 0 AND session_id IN ({marks}) AND ts_epoch = ("
-        "  SELECT MAX(ts_epoch) FROM requests WHERE session_id = r.session_id AND sidechain = 0)",
+        "SELECT session_id, MAX(ts_epoch) AS ts_epoch, cwd, branch,"
+        " input + cache_read + cache_w5m + cache_w1h AS context FROM requests"
+        f" WHERE sidechain = 0 AND session_id IN ({marks}) GROUP BY session_id",
         ids,
     )}
     compactions = {}
